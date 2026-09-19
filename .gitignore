@@ -1,0 +1,30 @@
+# build output
+dist/
+.output/
+.astro/
+
+# dependencies
+node_modules/
+
+# logs
+npm-debug.log*
+install.log
+dev.log
+*.log
+
+# local test artifacts (curl cookies / temp payloads)
+cookies.txt
+
+# environment / secrets (never commit)
+.env
+.env.*
+!.env.example
+.dev.vars
+
+# wrangler local state (local D1/R2 emulation)
+.wrangler/
+.var/
+
+# editor / os
+.DS_Store
+Thumbs.db

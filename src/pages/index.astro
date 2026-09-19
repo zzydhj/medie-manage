@@ -1,0 +1,191 @@
+---
+import Base from '../layouts/Base.astro';
+
+// 服务端已知登录态(中间件注入),用于首屏直接决定是否需要跳转
+const user = Astro.locals.user;
+if (!user) {
+  return Astro.redirect('/login');
+}
+---
+
+<Base title="知识文档库">
+  <!-- ===== 顶栏 ===== -->
+  <header class="app-header">
+    <button id="menu-toggle" class="header-btn menu-toggle" title="菜单">
+      <i class="fa-solid fa-bars"></i>
+    </button>
+    <span class="brand"><i class="fa-solid fa-book-open mr-1"></i> 知识文档库</span>
+
+    <!-- 公司切换器:仅超级管理员可见(客户端根据 /api/me 填充) -->
+    <select id="org-switcher" class="org-select hidden" title="切换公司"></select>
+
+    <div class="spacer"></div>
+
+    <!-- 每行列数(卡片密度)调节:自定义下拉,选择记忆到本地 -->
+    <div class="cols-control" id="cols-control">
+      <button class="cols-trigger" id="col-trigger" title="每行显示列数" aria-haspopup="listbox" aria-expanded="false">
+        <i class="fa-solid fa-table-columns"></i>
+        <span id="col-label">6 列</span>
+        <i class="fa-solid fa-chevron-down cols-caret"></i>
+      </button>
+      <div class="cols-menu" id="col-menu" role="listbox" aria-label="每行列数">
+        <button class="cols-option" data-cols="4" role="option">4 列</button>
+        <button class="cols-option" data-cols="6" role="option">6 列</button>
+        <button class="cols-option" data-cols="8" role="option">8 列</button>
+        <button class="cols-option" data-cols="12" role="option">12 列</button>
+        <button class="cols-option" data-cols="16" role="option">16 列</button>
+      </div>
+    </div>
+
+    <span id="whoami" class="text-xs font-semibold opacity-90 hidden sm:inline"></span>
+    <button id="btn-companies" class="header-btn hidden" title="公司管理">
+      <i class="fa-solid fa-building"></i><span class="hidden sm:inline">公司</span>
+    </button>
+    <button id="btn-users" class="header-btn hidden" title="用户管理">
+      <i class="fa-solid fa-users"></i><span class="hidden sm:inline">用户</span>
+    </button>
+    <button id="btn-logout" class="header-btn" title="退出登录">
+      <i class="fa-solid fa-right-from-bracket"></i><span class="hidden sm:inline">退出</span>
+    </button>
+  </header>
+
+  <!-- ===== 侧边栏 ===== -->
+  <div id="sidebar-overlay" class="sidebar-overlay"></div>
+  <aside id="sidebar" class="sidebar">
+    <div class="sidebar-title">
+      <span>Categories</span>
+    </div>
+    <div class="sidebar-scroll">
+      <div id="menu-tree"></div>
+      <button id="add-root-menu" class="add-root-btn hidden">
+        <i class="fa-solid fa-plus mr-1"></i> 新增一级菜单
+      </button>
+    </div>
+  </aside>
+
+  <!-- ===== 主体卡片区 ===== -->
+  <main class="main-content">
+    <div id="breadcrumb" class="breadcrumb"></div>
+    <div id="card-grid" class="card-grid"></div>
+  </main>
+
+  <!-- ===== 菜单 新增/编辑 弹窗 ===== -->
+  <div id="menu-modal" class="modal-mask">
+    <div class="modal-box">
+      <div class="modal-head">
+        <span id="menu-modal-title">新增菜单</span>
+        <button class="mini-btn" data-close="menu-modal"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div class="modal-body">
+        <div class="field">
+          <label>父级菜单</label>
+          <input id="menu-parent-label" type="text" disabled />
+        </div>
+        <div class="field">
+          <label>菜单名称</label>
+          <input id="menu-name" type="text" placeholder="输入菜单名称" />
+        </div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn btn-ghost" data-close="menu-modal">取消</button>
+        <button id="menu-save" class="btn btn-primary">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== 素材 新增 弹窗 ===== -->
+  <div id="item-modal" class="modal-mask">
+    <div class="modal-box">
+      <div class="modal-head">
+        <span>新增素材</span>
+        <button class="mini-btn" data-close="item-modal"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div class="modal-body">
+        <div class="field">
+          <label>所属菜单</label>
+          <input id="item-menu-label" type="text" disabled />
+        </div>
+        <div class="field">
+          <label>选择文件(图片 / 视频 / PDF / Word / Excel)</label>
+          <div id="dropzone" class="dropzone">
+            <i class="fa-solid fa-cloud-arrow-up text-2xl mb-2 block"></i>
+            点击或拖拽文件到此处上传
+          </div>
+          <input id="file-input" type="file" accept="image/*,video/*,.pdf,.doc,.docx,.xls,.xlsx" class="hidden" />
+        </div>
+        <div id="file-preview" class="preview-wrap hidden"></div>
+        <div class="field">
+          <label>标题</label>
+          <input id="item-title" type="text" placeholder="素材标题(默认取文件名)" />
+        </div>
+        <div id="upload-status" class="text-xs font-semibold text-slate-500"></div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn btn-ghost" data-close="item-modal">取消</button>
+        <button id="item-save" class="btn btn-primary" disabled>保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== 公司管理 弹窗(超级管理员) ===== -->
+  <div id="org-modal" class="modal-mask">
+    <div class="modal-box">
+      <div class="modal-head">
+        <span>公司管理</span>
+        <button class="mini-btn" data-close="org-modal"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div class="modal-body">
+        <div class="field">
+          <label>新增公司</label>
+          <div class="flex gap-2">
+            <input id="new-org-name" type="text" placeholder="公司名称" class="flex-1" />
+            <button id="add-org" class="btn btn-primary">添加</button>
+          </div>
+        </div>
+        <div id="org-list" class="flex flex-col"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== 用户管理 弹窗 ===== -->
+  <div id="user-modal" class="modal-mask">
+    <div class="modal-box">
+      <div class="modal-head">
+        <span>用户管理</span>
+        <button class="mini-btn" data-close="user-modal"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div class="modal-body">
+        <div class="field" id="user-org-field">
+          <label>所属公司</label>
+          <select id="user-org-select"></select>
+        </div>
+        <div class="field">
+          <label>新增用户</label>
+          <input id="new-user-name" type="text" placeholder="用户名" />
+          <input id="new-user-pass" type="password" placeholder="密码(至少 6 位)" />
+          <select id="new-user-role">
+            <option value="user">普通用户(仅下载)</option>
+            <option value="admin">公司管理员(可编辑本公司)</option>
+          </select>
+          <button id="add-user" class="btn btn-primary">添加用户</button>
+        </div>
+        <div id="user-list" class="flex flex-col"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 图片/视频放大预览:关灯式全屏,无边缘包裹,支持左右切换 -->
+  <div id="lightbox" class="lightbox">
+    <button class="lb-close" id="lb-close" title="关闭 (Esc)"><i class="fa-solid fa-xmark"></i></button>
+    <button class="lb-nav lb-prev" id="lb-prev" title="上一个 (←)"><i class="fa-solid fa-chevron-left"></i></button>
+    <div class="lb-stage" id="lightbox-body"></div>
+    <button class="lb-nav lb-next" id="lb-next" title="下一个 (→)"><i class="fa-solid fa-chevron-right"></i></button>
+    <div class="lb-caption" id="lightbox-title"></div>
+  </div>
+
+  <div id="toast" class="toast"></div>
+
+  <script>
+    import '../client/app';
+  </script>
+</Base>

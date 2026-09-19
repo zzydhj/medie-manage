@@ -1,0 +1,28 @@
+{
+  "name": "medie-manage",
+  "type": "module",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro build && wrangler pages dev dist --persist",
+    "astro": "astro",
+    "db:migrate:local": "wrangler d1 migrations apply medie-manage-db --local",
+    "db:migrate:remote": "wrangler d1 migrations apply medie-manage-db --remote",
+    "db:create": "wrangler d1 create medie-manage-db",
+    "seed:admin": "node scripts/seed-admin.mjs"
+  },
+  "dependencies": {
+    "@astrojs/cloudflare": "^12.1.0",
+    "astro": "^5.1.0",
+    "sortablejs": "^1.15.6"
+  },
+  "devDependencies": {
+    "@astrojs/tailwind": "^5.1.4",
+    "@cloudflare/workers-types": "^4.20241218.0",
+    "@types/sortablejs": "^1.15.8",
+    "tailwindcss": "^3.4.17",
+    "wrangler": "^3.100.0"
+  }
+}

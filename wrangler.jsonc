@@ -1,0 +1,25 @@
+{
+  // ⚠️⚠️ 部署到线上前,务必替换下面两处为你的真实值:
+  //   1) d1_databases[0].database_id —— 运行 `npm run db:create` 后,把输出里的 database_id(UUID)填进来
+  //   2) r2_buckets[0].bucket_name   —— 填你已创建的 R2 桶名称(小写字母/数字/连字符)
+  // 本地开发(astro dev / wrangler --local)使用当前占位值即可,本地 D1/R2 为独立模拟,不影响线上。
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "medie-manage",
+  "compatibility_date": "2024-12-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "pages_build_output_dir": "dist",
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "medie-manage-db",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "R2",
+      "bucket_name": "medie-manage-assets"
+    }
+  ]
+}
