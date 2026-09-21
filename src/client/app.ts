@@ -592,7 +592,11 @@ function renderGrid() {
       const meta = TYPE_META[it.type];
       const isMedia = it.type === 'image' || it.type === 'video';
       const previewSrc =
-        it.type === 'video' ? it.thumb_url || '' : it.type === 'image' ? it.file_url : '';
+        it.type === 'video'
+          ? it.thumb_url || ''
+          : it.type === 'image'
+            ? it.thumb_url || it.file_url // 卡片挂缩略图;老素材没缩略图时回退原图
+            : '';
       const pindex = pindexOf.get(it.id);
       const faved = FAVORITES.has(it.id);
       const showCopy = !mobile && it.type === 'image';
@@ -623,7 +627,7 @@ function renderGrid() {
           : '');
       const thumbInner = isMedia
         ? previewSrc
-          ? `<img src="${previewSrc}" alt="${escapeHtml(it.title)}" loading="lazy" />`
+          ? `<img src="${previewSrc}" alt="${escapeHtml(it.title)}" loading="lazy" decoding="async" />`
           : `<div class="text-slate-300 text-xs">无预览</div>`
         : `<div class="doc-icon ${meta.cls}"><i class="fa-solid ${meta.icon}"></i></div>`;
       return `
@@ -1580,6 +1584,39 @@ function generateVideoThumb(file: File): Promise<Blob | null> {
   });
 }
 
+/** 生成图片缩略图:长边缩到 640px 压成 JPEG。卡片列表只加载它,原图仅用于灯箱/复制/分享/下载 */
+async function generateImageThumb(file: File): Promise<Blob | null> {
+  try {
+    const bmp = await createImageBitmap(file);
+    const MAX = 640;
+    const scale = Math.min(1, MAX / Math.max(bmp.width, bmp.height));
+    // 原图本来就足够小:不造缩略图,省一次上传,卡片直接用原图也不卡
+    if (scale === 1 && file.size < 160 * 1024) {
+      bmp.close?.();
+      return null;
+    }
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(bmp.width * scale));
+    canvas.height = Math.max(1, Math.round(bmp.height * scale));
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      bmp.close?.();
+      return null;
+    }
+    // JPEG 无 alpha 通道:先铺白底,避免透明 PNG 缩略后变黑块
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(bmp, 0, 0, canvas.width, canvas.height);
+    bmp.close?.();
+    return await new Promise<Blob | null>((resolve) => {
+      canvas.toBlob((b) => resolve(b), 'image/jpeg', 0.82);
+    });
+  } catch {
+    // 浏览器解不了的格式(如 HEIC):不造缩略图,卡片回退原图
+    return null;
+  }
+}
+
 async function handleFileChosen(file: File) {
   const status = $('#upload-status') as HTMLElement;
   const preview = $('#file-preview') as HTMLElement;
@@ -1608,6 +1645,15 @@ async function handleFileChosen(file: File) {
         thumbKey = thumb.key;
         thumbUrl = thumb.url;
       }
+    } else if (type === 'image') {
+      status.textContent = '生成图片缩略图…';
+      const blob = await generateImageThumb(file);
+      if (blob) {
+        const thumbFile = new File([blob], 'thumb.jpg', { type: 'image/jpeg' });
+        const thumb = await uploadFile(thumbFile, 'thumb');
+        thumbKey = thumb.key;
+        thumbUrl = thumb.url;
+      }
     }
     pendingUpload = {
       type,
@@ -1624,7 +1670,7 @@ async function handleFileChosen(file: File) {
     const sizeMb = (file.size / 1024 / 1024).toFixed(1);
     const cap = `<div class="text-xs text-slate-500">${escapeHtml(file.name)}<br/>${meta.label} · ${sizeMb}MB</div>`;
     preview.classList.remove('hidden');
-    if (type === 'image') preview.innerHTML = `<img src="${main.url}" alt="预览"/>${cap}`;
+    if (type === 'image') preview.innerHTML = `<img src="${thumbUrl || main.url}" alt="预览"/>${cap}`;
     else if (type === 'video') preview.innerHTML = `<video src="${main.url}" muted></video>${cap}`;
     else if (type === 'pdf')
       preview.innerHTML = `<iframe class="preview-doc" src="${main.url}" title="PDF 预览"></iframe>${cap}`;
