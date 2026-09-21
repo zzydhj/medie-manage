@@ -425,8 +425,20 @@ function menuPath(nodes: MenuNode[], id: string, trail: string[] = []): string[]
   }
   return [];
 }
+/** 收集某菜单及其所有子孙菜单的 id(点一级菜单时连带统计/显示子菜单内容) */
+function menuSubtreeIds(menuId: string): Set<string> {
+  const out = new Set<string>();
+  const walk = (n: MenuNode) => {
+    out.add(n.id);
+    n.children.forEach(walk);
+  };
+  const root = findMenu(MENUS, menuId);
+  if (root) walk(root);
+  else out.add(menuId);
+  return out;
+}
 function countItemsIn(menuId: string): number {
-  return ITEMS.filter((i) => i.menu_id === menuId).length;
+  return ITEMS.filter((i) => menuSubtreeIds(menuId).has(i.menu_id)).length;
 }
 function countFavItems(): number {
   return ITEMS.filter((i) => FAVORITES.has(i.id)).length;
@@ -524,13 +536,15 @@ function bindMenuTree() {
         if (window.innerWidth < 1024) toggleSidebarDrawer(false);
         return;
       }
-      // 点击箭头切换展开;点击行选中
+      // 点箭头=仅展开/收起;点行=选中,且若有子菜单则一并展开(免去找小箭头)
       const node = row.parentElement as HTMLElement;
       const caret = (e.target as HTMLElement).closest('.menu-caret');
-      if (caret && node.querySelector('.menu-children')) {
+      const hasKids = !!node.querySelector('.menu-children');
+      if (caret && hasKids) {
         node.classList.toggle('open');
         return;
       }
+      if (hasKids) node.classList.add('open');
       selectedMenuId = id;
       favView = false;
       saveView();
@@ -622,7 +636,8 @@ function renderGrid() {
       : favView
         ? // 收藏视图:跨菜单,仅展示我加星的素材
           ITEMS.filter((i) => FAVORITES.has(i.id))
-        : ITEMS.filter((i) => i.menu_id === selectedMenuId)
+        : // 菜单视图:含该菜单及其所有子菜单的素材(点一级菜单看全部下级内容)
+          ITEMS.filter((i) => menuSubtreeIds(selectedMenuId!).has(i.menu_id))
   ).sort((a, b) => a.sort_order - b.sort_order);
 
   // 全部类型均可在灯箱内预览:图片/视频/PDF 原生渲染,Word/Excel 由客户端解析渲染
@@ -1034,7 +1049,24 @@ async function batchShare() {
   try {
     const files: File[] = [];
     for (let i = 0; i < items.length; i++) {
-      files.push(await fetchItemFile(items[i]));
+      const t0 = performance.now();
+      files.push(
+        await fetchItemFile(items[i], (loaded, total) => {
+          const pct = Math.round((loaded / total) * 100);
+          const mb = (loaded / 1024 / 1024).toFixed(1);
+          const totalMb = (total / 1024 / 1024).toFixed(1);
+          const elapsed = (performance.now() - t0) / 1000;
+          let eta = '';
+          if (loaded > 0 && elapsed > 0.3) {
+            const remain = Math.max(0, (total - loaded) / (loaded / elapsed));
+            eta =
+              remain >= 60
+                ? ` · 约还需 ${Math.round(remain / 60)} 分钟`
+                : ` · 约还需 ${Math.max(1, Math.round(remain))} 秒`;
+          }
+          toast(`正在下载第 ${i + 1}/${items.length} 个:${pct}%(${mb}/${totalMb} MB)${eta}…`);
+        }),
+      );
       setBatchProgress(btn, i + 1, items.length);
     }
     if (!navigator.canShare?.({ files })) throw new Error('系统不支持一次分享这些文件,请改用下载');

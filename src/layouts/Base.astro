@@ -13,6 +13,8 @@ const { title = '知识文档库' } = Astro.props;
     <meta charset="UTF-8" />
     <!-- viewport-fit=cover:让底部导航能用 env(safe-area-inset-bottom) 避开 iPhone 小黑条 -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <!-- theme-color:不支持 cover 的浏览器会把状态栏/顶部区域涂成默认灰;设为品牌蓝与顶栏/底部导航同色 -->
+    <meta name="theme-color" content="#1e3a8a" />
     <title>{title}</title>
     <link
       rel="stylesheet"

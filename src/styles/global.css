@@ -317,11 +317,14 @@ body {
   flex-shrink: 0;
 }
 .menu-caret {
-  font-size: 11px;
+  font-size: 16px;
   color: #94a3b8;
   transition: transform 0.2s;
-  width: 14px;
+  width: 24px;
   text-align: center;
+  /* 加大点击热区:箭头视觉放大,并用 padding+负 margin 扩可点范围而不撑开行高 */
+  padding: 6px 0;
+  margin: -6px 0;
 }
 .menu-node.open > .menu-row .menu-caret {
   transform: rotate(90deg);
@@ -1222,8 +1225,8 @@ body.select-mode .card-actions { display: none; }
   .app-header { display: none; }
   .main-content {
     margin-top: 0;
-    /* 底部留出导航高度 + iPhone 安全区 */
-    padding: 12px 12px calc(72px + env(safe-area-inset-bottom));
+    /* 顶部避开刘海/状态栏安全区,底部留出导航高度 + 安全区 */
+    padding: calc(12px + env(safe-area-inset-top)) 12px calc(72px + env(safe-area-inset-bottom));
     min-height: 100vh;
   }
   /* 抽屉占满全高(顶栏已无),宽度收到单手可达;层级高于导航与遮罩 */
