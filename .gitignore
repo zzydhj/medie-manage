@@ -15,6 +15,9 @@ dev.log
 # local test artifacts (curl cookies / temp payloads)
 cookies.txt
 
+# throwaway office-preview test scratch dir (generated xlsx/docx + screenshots)
+.tmp-doctest/
+
 # environment / secrets (never commit)
 .env
 .env.*

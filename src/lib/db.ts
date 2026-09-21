@@ -135,6 +135,8 @@ export async function createUser(
 }
 
 export async function deleteUser(db: D1Database, id: string): Promise<void> {
+  // 连带清理收藏记录(运行时未必强制外键 CASCADE)
+  await db.prepare('DELETE FROM user_favorites WHERE user_id = ?').bind(id).run();
   await db.prepare('DELETE FROM users WHERE id = ?').bind(id).run();
 }
 
@@ -145,6 +147,35 @@ export async function setUserGridCols(
   cols: number | null,
 ): Promise<void> {
   await db.prepare('UPDATE users SET grid_cols = ? WHERE id = ?').bind(cols, id).run();
+}
+
+// ------------------------- 用户收藏 -------------------------
+
+export async function listFavoriteItemIds(db: D1Database, userId: string): Promise<string[]> {
+  const { results } = await db
+    .prepare('SELECT item_id FROM user_favorites WHERE user_id = ? ORDER BY created_at ASC')
+    .bind(userId)
+    .all<{ item_id: string }>();
+  return (results ?? []).map((r) => r.item_id);
+}
+
+export async function setFavorite(
+  db: D1Database,
+  userId: string,
+  itemId: string,
+  on: boolean,
+): Promise<void> {
+  if (on) {
+    await db
+      .prepare('INSERT OR IGNORE INTO user_favorites (user_id, item_id, created_at) VALUES (?, ?, ?)')
+      .bind(userId, itemId, now())
+      .run();
+  } else {
+    await db
+      .prepare('DELETE FROM user_favorites WHERE user_id = ? AND item_id = ?')
+      .bind(userId, itemId)
+      .run();
+  }
 }
 
 // ------------------------- 菜单 -------------------------
@@ -238,6 +269,13 @@ export async function deleteMenu(db: D1Database, id: string, orgId: string): Pro
   }
   const ids = [...toDelete];
   const placeholders = ids.map(() => '?').join(',');
+  // 连带清理指向这些素材的收藏记录
+  await db
+    .prepare(
+      `DELETE FROM user_favorites WHERE item_id IN (SELECT id FROM items WHERE menu_id IN (${placeholders}))`,
+    )
+    .bind(...ids)
+    .run();
   await db
     .prepare(`DELETE FROM items WHERE menu_id IN (${placeholders})`)
     .bind(...ids)
@@ -363,6 +401,8 @@ export async function updateItem(
 }
 
 export async function deleteItem(db: D1Database, id: string, orgId: string): Promise<void> {
+  // 连带清理指向该素材的收藏记录
+  await db.prepare('DELETE FROM user_favorites WHERE item_id = ?').bind(id).run();
   await db.prepare('DELETE FROM items WHERE id = ? AND org_id = ?').bind(id, orgId).run();
 }
 

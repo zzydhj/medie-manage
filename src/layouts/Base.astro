@@ -11,7 +11,8 @@ const { title = '知识文档库' } = Astro.props;
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- viewport-fit=cover:让底部导航能用 env(safe-area-inset-bottom) 避开 iPhone 小黑条 -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>{title}</title>
     <link
       rel="stylesheet"

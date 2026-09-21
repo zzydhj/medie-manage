@@ -21,6 +21,20 @@ if (!user) {
 
     <div class="spacer"></div>
 
+    <!-- 搜索:按文件名或标题过滤当前公司素材(全公司范围) -->
+    <div class="search-control" id="search-control">
+      <i class="fa-solid fa-magnifying-glass search-icon"></i>
+      <input id="search-input" type="text" placeholder="搜索文件名 / 标题" autocomplete="off" />
+      <button id="search-clear" class="search-clear hidden" title="清空搜索" type="button">
+        <i class="fa-solid fa-xmark"></i>
+      </button>
+    </div>
+
+    <!-- 批量选择:开启后卡片可勾选,支持逐个下载 / 手机端多文件分享 -->
+    <button id="btn-batch" class="header-btn" title="批量选择">
+      <i class="fa-solid fa-list-check"></i><span class="hidden sm:inline">批量</span>
+    </button>
+
     <!-- 每行列数(卡片密度)调节:自定义下拉,选择记忆到本地 -->
     <div class="cols-control" id="cols-control">
       <button class="cols-trigger" id="col-trigger" title="每行显示列数" aria-haspopup="listbox" aria-expanded="false">
@@ -52,9 +66,6 @@ if (!user) {
   <!-- ===== 侧边栏 ===== -->
   <div id="sidebar-overlay" class="sidebar-overlay"></div>
   <aside id="sidebar" class="sidebar">
-    <div class="sidebar-title">
-      <span>Categories</span>
-    </div>
     <div class="sidebar-scroll">
       <div id="menu-tree"></div>
       <button id="add-root-menu" class="add-root-btn hidden">
@@ -65,9 +76,77 @@ if (!user) {
 
   <!-- ===== 主体卡片区 ===== -->
   <main class="main-content">
-    <div id="breadcrumb" class="breadcrumb"></div>
     <div id="card-grid" class="card-grid"></div>
   </main>
+
+  <!-- ===== 手机端:搜索抽屉(窄屏时 #search-control 由 JS 搬进来,保持单一输入源) ===== -->
+  <div id="mobile-search" class="mobile-search"></div>
+
+  <!-- ===== 手机端:底部导航(搜索 / 菜单 / 批量 / 账户) ===== -->
+  <nav id="mobile-nav" class="mobile-nav">
+    <button class="mnav-btn" id="mnav-search" type="button">
+      <i class="fa-solid fa-magnifying-glass"></i><span>搜索</span>
+    </button>
+    <button class="mnav-btn" id="mnav-menu" type="button">
+      <i class="fa-solid fa-bars"></i><span>菜单</span>
+    </button>
+    <button class="mnav-btn" id="mnav-batch" type="button">
+      <i class="fa-solid fa-list-check"></i><span>批量</span>
+    </button>
+    <button class="mnav-btn" id="mnav-account" type="button">
+      <i class="fa-regular fa-user"></i><span>账户</span>
+    </button>
+  </nav>
+
+  <!-- ===== 批量选择操作条:进入批量模式后出现(手机端悬在底部导航上方) ===== -->
+  <div id="batch-bar" class="batch-bar hidden">
+    <span class="batch-count">已选 <b id="batch-count">0</b> 项</span>
+    <button class="batch-btn ghost" id="batch-all" type="button" title="全选 / 取消全选">
+      <i class="fa-solid fa-list-check"></i><span>全选</span>
+    </button>
+    <button class="batch-btn" id="batch-download" type="button" title="逐个下载所选文件">
+      <i class="fa-solid fa-download"></i><span>下载</span>
+    </button>
+    <button class="batch-btn" id="batch-share" type="button" title="调起系统分享,可一次发多个文件">
+      <i class="fa-solid fa-share-nodes"></i><span>分享</span>
+    </button>
+    <button class="batch-btn ghost" id="batch-zip" type="button" title="打包成一个 ZIP 下载(浏览器拦截多文件下载时用)">
+      <i class="fa-solid fa-file-zipper"></i><span>打包</span>
+    </button>
+    <button class="batch-btn ghost" id="batch-exit" type="button" title="退出批量">
+      <i class="fa-solid fa-xmark"></i>
+    </button>
+  </div>
+
+  <!-- ===== 手机端:账户 sheet(身份 + 公司切换 + 管理入口 + 退出) ===== -->
+  <div id="account-mask" class="account-mask"></div>
+  <div id="account-sheet" class="account-sheet">
+    <div class="account-head">
+      <div class="account-avatar"><i class="fa-solid fa-user"></i></div>
+      <div class="account-id">
+        <div id="account-name" class="account-name">—</div>
+        <div id="account-role" class="account-role"></div>
+      </div>
+      <button class="mini-btn" id="account-close" type="button" title="关闭">
+        <i class="fa-solid fa-xmark"></i>
+      </button>
+    </div>
+    <div class="account-body">
+      <div id="account-org-field" class="account-field hidden">
+        <label>当前公司</label>
+        <!-- 窄屏时 #org-switcher 由 JS 搬进来 -->
+      </div>
+      <button class="account-item hidden" id="account-companies" type="button">
+        <i class="fa-solid fa-building"></i><span>公司管理</span><i class="fa-solid fa-chevron-right arrow"></i>
+      </button>
+      <button class="account-item hidden" id="account-users" type="button">
+        <i class="fa-solid fa-users"></i><span>用户管理</span><i class="fa-solid fa-chevron-right arrow"></i>
+      </button>
+      <button class="account-item danger" id="account-logout" type="button">
+        <i class="fa-solid fa-right-from-bracket"></i><span>退出登录</span>
+      </button>
+    </div>
+  </div>
 
   <!-- ===== 菜单 新增/编辑 弹窗 ===== -->
   <div id="menu-modal" class="modal-mask">
@@ -123,6 +202,30 @@ if (!user) {
       <div class="modal-foot">
         <button class="btn btn-ghost" data-close="item-modal">取消</button>
         <button id="item-save" class="btn btn-primary" disabled>保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== 素材 编辑 弹窗(改标题 / 换分组) ===== -->
+  <div id="item-edit-modal" class="modal-mask">
+    <div class="modal-box">
+      <div class="modal-head">
+        <span>编辑素材</span>
+        <button class="mini-btn" data-close="item-edit-modal"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div class="modal-body">
+        <div class="field">
+          <label>标题</label>
+          <input id="item-edit-title" type="text" placeholder="素材标题" />
+        </div>
+        <div class="field">
+          <label>所属分组</label>
+          <select id="item-edit-menu"></select>
+        </div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn btn-ghost" data-close="item-edit-modal">取消</button>
+        <button id="item-edit-save" class="btn btn-primary">保存</button>
       </div>
     </div>
   </div>

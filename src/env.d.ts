@@ -24,3 +24,18 @@ interface SessionUser {
   role: 'superadmin' | 'admin' | 'user';
   orgId: string | null;
 }
+
+// mammoth 浏览器预打包版(UMD)无官方类型声明,补最小声明供动态 import 使用
+declare module 'mammoth/mammoth.browser.js' {
+  interface MammothResult {
+    value: string;
+    messages: Array<{ type: string; message: string }>;
+  }
+  const mammoth: {
+    convertToHtml(
+      input: { arrayBuffer: ArrayBuffer },
+      options?: Record<string, unknown>,
+    ): Promise<MammothResult>;
+  };
+  export default mammoth;
+}

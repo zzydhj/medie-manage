@@ -1,6 +1,6 @@
 import type { APIRoute } from 'astro';
-import { listItems, listMenus } from '../../lib/db';
-import { getEnv, isResponse, json, requireOrg } from '../../lib/api';
+import { listFavoriteItemIds, listItems, listMenus } from '../../lib/db';
+import { getEnv, isResponse, json, requireOrg, requireUser } from '../../lib/api';
 
 export interface MenuNode {
   id: string;
@@ -34,11 +34,14 @@ function buildTree(rows: { id: string; name: string; parent_id: string | null; s
 export const GET: APIRoute = async (context) => {
   const scope = await requireOrg(context);
   if (isResponse(scope)) return scope;
+  const user = requireUser(context.locals);
+  if (isResponse(user)) return user;
   const env = getEnv(context.locals);
 
-  const [menus, items] = await Promise.all([
+  const [menus, items, favorites] = await Promise.all([
     listMenus(env.DB, scope.orgId),
     listItems(env.DB, scope.orgId),
+    listFavoriteItemIds(env.DB, user.id),
   ]);
 
   return json({
@@ -53,5 +56,6 @@ export const GET: APIRoute = async (context) => {
       filename: it.filename,
       sort_order: it.sort_order,
     })),
+    favorites,
   });
 };

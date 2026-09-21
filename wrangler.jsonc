@@ -1,8 +1,8 @@
 {
-  // ⚠️⚠️ 部署到线上前,务必替换下面两处为你的真实值:
-  //   1) d1_databases[0].database_id —— 运行 `npm run db:create` 后,把输出里的 database_id(UUID)填进来
-  //   2) r2_buckets[0].bucket_name   —— 填你已创建的 R2 桶名称(小写字母/数字/连字符)
-  // 本地开发(astro dev / wrangler --local)使用当前占位值即可,本地 D1/R2 为独立模拟,不影响线上。
+  // 线上资源(2026-09-21 创建于账号 c58d6530…ff6):
+  //   D1: medie-manage-db → 28d72062-d386-4812-8258-baa842370c5c
+  //   R2: medie-manage-assets
+  //   SESSION_SECRET: 通过 `wrangler pages secret put SESSION_SECRET` 配置,不入库
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "medie-manage",
   "compatibility_date": "2024-12-01",
@@ -12,7 +12,7 @@
     {
       "binding": "DB",
       "database_name": "medie-manage-db",
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      "database_id": "28d72062-d386-4812-8258-baa842370c5c",
       "migrations_dir": "migrations"
     }
   ],

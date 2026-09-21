@@ -14,4 +14,11 @@ export default defineConfig({
     },
   }),
   integrations: [tailwind()],
+  vite: {
+    // 让 dev 启动时就预打包 Office 预览库(动态 import),
+    // 避免首次预览时 Vite 才发现新依赖而触发整页 reload。仅影响 dev,生产 build 仍由 Rollup 拆 chunk。
+    optimizeDeps: {
+      include: ['xlsx', 'mammoth/mammoth.browser.js'],
+    },
+  },
 });
