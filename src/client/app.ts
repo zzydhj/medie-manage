@@ -248,6 +248,9 @@ function openMobileSearch(open: boolean) {
     const input = $('#search-input') as HTMLInputElement | null;
     // 等抽屉滑到位再聚焦,避免 iOS 上键盘与动画打架
     window.setTimeout(() => input?.focus(), 150);
+  } else {
+    // 收回时失焦,避免抽屉已隐藏但软键盘还悬在屏幕上
+    ($('#search-input') as HTMLInputElement | null)?.blur();
   }
   syncMobileNav();
 }
@@ -304,6 +307,13 @@ function initMobileNav() {
   $('#mnav-search')?.addEventListener('click', () =>
     openMobileSearch(!document.body.classList.contains('search-open')),
   );
+  // 搜索抽屉展开时:点抽屉与搜索键以外的任意空白(卡片区/顶部留白)即收回
+  document.addEventListener('click', (e) => {
+    if (!document.body.classList.contains('search-open')) return;
+    const t = e.target as HTMLElement;
+    if (t.closest('#mobile-search') || t.closest('#mnav-search')) return;
+    openMobileSearch(false);
+  });
   $('#mnav-menu')?.addEventListener('click', () => toggleSidebarDrawer());
   $('#mnav-batch')?.addEventListener('click', () => setSelectMode(!selectMode));
   $('#mnav-account')?.addEventListener('click', () =>
