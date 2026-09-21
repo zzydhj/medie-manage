@@ -379,7 +379,7 @@ export async function updateItem(
   db: D1Database,
   id: string,
   orgId: string,
-  patch: { title?: string; menu_id?: string },
+  patch: { title?: string; menu_id?: string; thumb_key?: string | null; thumb_url?: string | null },
 ): Promise<void> {
   const fields: string[] = [];
   const vals: unknown[] = [];
@@ -390,6 +390,14 @@ export async function updateItem(
   if (patch.menu_id !== undefined) {
     fields.push('menu_id = ?');
     vals.push(patch.menu_id);
+  }
+  if (patch.thumb_key !== undefined) {
+    fields.push('thumb_key = ?');
+    vals.push(patch.thumb_key);
+  }
+  if (patch.thumb_url !== undefined) {
+    fields.push('thumb_url = ?');
+    vals.push(patch.thumb_url);
   }
   if (!fields.length) return;
   fields.push('updated_at = ?');

@@ -164,6 +164,8 @@ async function init() {
   }
   // 用户管理入口:超级管理员 + 公司管理员
   if (isAdmin) $('#btn-users')?.classList.remove('hidden');
+  // 补缩略图:管理员一次性运维操作
+  if (isAdmin) $('#btn-backfill')?.classList.remove('hidden');
 
   bindHeader();
   initMobileNav();
@@ -192,6 +194,7 @@ function bindHeader() {
   $('#btn-logout')?.addEventListener('click', doLogout);
   $('#btn-companies')?.addEventListener('click', openOrgModal);
   $('#btn-users')?.addEventListener('click', openUserModal);
+  $('#btn-backfill')?.addEventListener('click', backfillThumbs);
   $('#btn-batch')?.addEventListener('click', () => setSelectMode(!selectMode));
 
   // 侧栏抽屉开合(平板用顶栏汉堡按钮,手机用底部导航“菜单”)
@@ -294,6 +297,7 @@ function initMobileNav() {
       $('#account-companies')?.classList.remove('hidden');
     }
     if (isAdmin) $('#account-users')?.classList.remove('hidden');
+    if (isAdmin) $('#account-backfill')?.classList.remove('hidden');
   }
 
   $('#mnav-search')?.addEventListener('click', () =>
@@ -314,6 +318,10 @@ function initMobileNav() {
   $('#account-users')?.addEventListener('click', () => {
     openAccountSheet(false);
     openUserModal();
+  });
+  $('#account-backfill')?.addEventListener('click', () => {
+    openAccountSheet(false);
+    backfillThumbs();
   });
   syncMobileNav();
 }
@@ -727,19 +735,33 @@ async function fetchItemFile(it: ItemDTO): Promise<File> {
 async function shareItemFile(id: string): Promise<void> {
   const it = ITEMS.find((i) => i.id === id);
   if (!it) throw new Error('素材不存在');
-  if (!navigator.share) throw new Error('当前浏览器不支持分享,请改用下载');
-  const file = await fetchItemFile(it);
-  if (navigator.canShare?.({ files: [file] })) {
-    await navigator.share({ files: [file], title: it.title, text: it.title });
-    return;
+  if (!navigator.share)
+    throw new Error('当前浏览器不支持分享:可点开大图后长按图片,选择"存储图像/分享"');
+  // 手机网络取原图可能较慢:先提示,避免用户以为点了没反应;也避免重复点
+  toast('正在准备文件,稍后弹出系统分享面板…');
+  let file: File;
+  try {
+    file = await fetchItemFile(it);
+  } catch {
+    throw new Error('文件获取失败:可点开大图后长按图片,选择"存储图像/分享"');
   }
-  // 桌面浏览器多数不允许分享文件本体:退一步分享链接(注意:链接需登录才能打开)
-  await navigator.share({
-    title: it.title,
-    text: it.title,
-    url: new URL(it.file_url, window.location.href).href,
-  });
-  toast('此浏览器不支持分享文件本体,已改为分享链接(对方需登录才能打开)');
+  try {
+    if (navigator.canShare?.({ files: [file] })) {
+      await navigator.share({ files: [file], title: it.title, text: it.title });
+      return;
+    }
+    // 桌面浏览器多数不允许分享文件本体:退一步分享链接(注意:链接需登录才能打开)
+    await navigator.share({
+      title: it.title,
+      text: it.title,
+      url: new URL(it.file_url, window.location.href).href,
+    });
+    toast('此浏览器不支持分享文件本体,已改为分享链接(对方需登录才能打开)');
+  } catch (e) {
+    // 用户在系统面板里点取消属正常操作,原样抛给调用方静默处理
+    if ((e as Error)?.name === 'AbortError') throw e;
+    throw new Error('分享未唤起:可点开大图后长按图片,选择"存储图像/分享"');
+  }
 }
 
 // ---------------- 批量选择(逐个下载 / 多文件分享) ----------------
@@ -1218,6 +1240,8 @@ function renderPreview() {
         ? `${item.title} · ${previewIndex + 1}/${PREVIEW_LIST.length}`
         : item.title;
   }
+  // 手机端提示:长按图片会出系统菜单(存储图像/分享),是进相册的唯一可靠路径
+  $('#lb-hint')?.classList.toggle('hidden', !(isMobileViewport() && item.kind === 'image'));
   // 仅一张时隐藏左右切换
   const multi = PREVIEW_LIST.length > 1;
   const prev = $('#lb-prev');
@@ -1615,6 +1639,48 @@ async function generateImageThumb(file: File): Promise<Blob | null> {
     // 浏览器解不了的格式(如 HEIC):不造缩略图,卡片回退原图
     return null;
   }
+}
+
+/** 给无缩略图的老图片补生成:拉原图 → 本地生成 → 上传 → 回写卡片。管理员一次性操作 */
+async function backfillThumbs(): Promise<void> {
+  const targets = ITEMS.filter((i) => i.type === 'image' && !i.thumb_url);
+  if (!targets.length) return toast('当前公司的图片都已有缩略图');
+  let ok = 0;
+  let skip = 0;
+  let fail = 0;
+  toast(`开始补缩略图:共 ${targets.length} 张…`);
+  for (let i = 0; i < targets.length; i++) {
+    const it = targets[i];
+    try {
+      const res = await fetch(it.file_url);
+      if (!res.ok) throw new Error(String(res.status));
+      const blob = await res.blob();
+      const thumbBlob = await generateImageThumb(
+        new File([blob], it.filename || it.title, { type: blob.type }),
+      );
+      // 原图已足够小:无需缩略图,跳过
+      if (!thumbBlob) {
+        skip++;
+        continue;
+      }
+      const thumb = await uploadFile(new File([thumbBlob], 'thumb.jpg', { type: 'image/jpeg' }), 'thumb');
+      await api(`/api/items/${it.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ thumbKey: thumb.key, thumbUrl: thumb.url }),
+      });
+      it.thumb_url = thumb.url;
+      ok++;
+    } catch {
+      fail++;
+    }
+    toast(`补缩略图 ${i + 1}/${targets.length}…`);
+  }
+  renderGrid();
+  toast(
+    `补缩略图完成:成功 ${ok} 张${skip ? `, ${skip} 张原图已够小跳过` : ''}${fail ? `, ${fail} 张失败` : ''}`,
+    fail > 0 && ok === 0,
+  );
 }
 
 async function handleFileChosen(file: File) {

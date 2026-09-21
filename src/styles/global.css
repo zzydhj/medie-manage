@@ -976,6 +976,23 @@ body {
 .lb-nav[hidden] { display: none; }
 .lb-prev { left: 20px; }
 .lb-next { right: 20px; }
+/* 手机端灯箱提示:长按图片出系统菜单(存储图像/分享),位于标题上方 */
+.lb-hint {
+  position: absolute;
+  bottom: 58px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(15, 23, 42, 0.65);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 5px 12px;
+  border-radius: 999px;
+  pointer-events: none;
+  z-index: 6;
+  white-space: nowrap;
+}
+.lb-hint.hidden { display: none; }
 .lb-caption {
   position: absolute;
   bottom: 22px;

@@ -59,6 +59,10 @@ if (!user) {
     <button id="btn-users" class="header-btn hidden" title="用户管理">
       <i class="fa-solid fa-users"></i><span class="hidden sm:inline">用户</span>
     </button>
+    <!-- 补缩略图:给功能上线前传的老图片一次性补生成缩略图(管理员可见) -->
+    <button id="btn-backfill" class="header-btn hidden" title="为无缩略图的老图片补生成缩略图">
+      <i class="fa-solid fa-images"></i><span class="hidden sm:inline">补缩略图</span>
+    </button>
     <button id="btn-logout" class="header-btn" title="退出登录">
       <i class="fa-solid fa-right-from-bracket"></i><span class="hidden sm:inline">退出</span>
     </button>
@@ -142,6 +146,9 @@ if (!user) {
       </button>
       <button class="account-item hidden" id="account-users" type="button">
         <i class="fa-solid fa-users"></i><span>用户管理</span><i class="fa-solid fa-chevron-right arrow"></i>
+      </button>
+      <button class="account-item hidden" id="account-backfill" type="button">
+        <i class="fa-solid fa-images"></i><span>补生成缩略图</span><i class="fa-solid fa-chevron-right arrow"></i>
       </button>
       <button class="account-item danger" id="account-logout" type="button">
         <i class="fa-solid fa-right-from-bracket"></i><span>退出登录</span>
@@ -285,6 +292,8 @@ if (!user) {
     <div class="lb-stage" id="lightbox-body"></div>
     <button class="lb-nav lb-next" id="lb-next" title="下一个 (→)"><i class="fa-solid fa-chevron-right"></i></button>
     <div class="lb-caption" id="lightbox-title"></div>
+    <!-- 手机端提示:长按图片出系统菜单(存储图像/分享),进相册的可靠路径 -->
+    <div id="lb-hint" class="lb-hint hidden">长按图片可保存到相册或分享</div>
   </div>
 
   <div id="toast" class="toast"></div>
