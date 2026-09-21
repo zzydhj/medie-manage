@@ -89,9 +89,13 @@ export const GET: APIRoute = async (context) => {
     }
     headers.set('content-range', `bytes ${offset}-${offset + length - 1}/${obj.size}`);
     headers.set('content-length', String(body.byteLength));
+    headers.set('cache-control', 'private, max-age=31536000');
     return new Response(body, { status: 206, headers });
   }
 
   headers.set('content-length', String(body.byteLength));
+  // 文件按 key 不可变(uuid 路径、永不覆盖):允许浏览器长期私有缓存,
+  // 同设备重复打开大图/缩略图直接命中磁盘缓存,不再重新下载。
+  headers.set('cache-control', 'private, max-age=31536000, immutable');
   return new Response(body, { status: 200, headers });
 };

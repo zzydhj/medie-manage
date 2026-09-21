@@ -185,9 +185,6 @@ async function init() {
   initBatch();
   initLightbox();
 
-  // 手机端首屏默认进“收藏”视图:高频入口,免去每次翻菜单
-  if (isMobileViewport()) favView = true;
-
   await loadContent();
 }
 
@@ -337,6 +334,36 @@ function initMobileNav() {
   syncMobileNav();
 }
 
+// ---------------- 视图记忆(刷新后回到上次打开的菜单/收藏) ----------------
+const VIEW_KEY = 'mm-last-view';
+interface SavedView {
+  orgId: string | null;
+  menuId: string | null;
+  fav: boolean;
+}
+function saveView() {
+  try {
+    localStorage.setItem(
+      VIEW_KEY,
+      JSON.stringify({ orgId: activeOrgId, menuId: selectedMenuId, fav: favView }),
+    );
+  } catch {
+    /* 隐私模式等写不了就忽略,不影响主流程 */
+  }
+}
+function restoreView(): SavedView | null {
+  try {
+    const raw = localStorage.getItem(VIEW_KEY);
+    if (!raw) return null;
+    const v = JSON.parse(raw) as SavedView;
+    // 换公司不套用旧公司的视图
+    if (v.orgId !== activeOrgId) return null;
+    return v;
+  } catch {
+    return null;
+  }
+}
+
 // ---------------- 加载内容 ----------------
 async function loadContent() {
   if (!activeOrgId) {
@@ -351,10 +378,23 @@ async function loadContent() {
   ITEMS = data.items;
   FAVORITES = new Set(data.favorites ?? []);
 
-  // 默认选中第一个叶子菜单;收藏视图下不预选(手机端首屏即收藏)
-  if (!favView && (!selectedMenuId || !findMenu(MENUS, selectedMenuId))) {
+  // 视图恢复:刷新后回到上次打开的菜单/收藏;无记录或已失效(菜单被删/换公司)则用默认
+  // (手机端首屏=收藏,电脑端=第一个叶子菜单)
+  const saved = restoreView();
+  if (saved?.fav) {
+    favView = true;
+    selectedMenuId = null;
+  } else if (saved?.menuId && findMenu(MENUS, saved.menuId)) {
+    favView = false;
+    selectedMenuId = saved.menuId;
+  } else if (isMobileViewport()) {
+    favView = true;
+    selectedMenuId = null;
+  } else {
+    favView = false;
     selectedMenuId = firstLeafId(MENUS);
   }
+  saveView(); // 把当前生效视图落盘,供下次刷新恢复
   renderSidebar();
   renderGrid();
   if (isAdmin) $('#add-root-menu')?.classList.remove('hidden');
@@ -475,6 +515,7 @@ function bindMenuTree() {
       // 收藏虚拟节点:进入收藏视图(跨菜单、个人)
       if (row.dataset.fav) {
         favView = true;
+        saveView();
         resetSearch();
         document.querySelectorAll('.menu-row.active').forEach((r) => r.classList.remove('active'));
         row.classList.add('active');
@@ -492,6 +533,7 @@ function bindMenuTree() {
       }
       selectedMenuId = id;
       favView = false;
+      saveView();
       resetSearch();
       document.querySelectorAll('.menu-row.active').forEach((r) => r.classList.remove('active'));
       row.classList.add('active');
