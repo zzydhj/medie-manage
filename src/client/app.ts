@@ -1386,6 +1386,13 @@ function initSearch() {
       clearBtn?.classList.add('hidden');
     }
   });
+  // 再兜底:个别浏览器在 load 之后才做凭据自动填充(如把登录用户名填进首屏输入框),延迟复查一次
+  window.setTimeout(() => {
+    if (input.value && !searchQuery && document.activeElement !== input) {
+      input.value = '';
+      clearBtn?.classList.add('hidden');
+    }
+  }, 800);
   // 前进/后退(bfcache)恢复整页状态时,清空搜索保持一致
   window.addEventListener('pageshow', (e: PageTransitionEvent) => {
     if (e.persisted) {
@@ -1405,6 +1412,13 @@ function initSearch() {
     renderGrid();
   };
   input.addEventListener('input', () => {
+    // 未聚焦时收到值变化 = 浏览器自动填充/表单恢复(不是用户输入):清掉,不当作搜索词
+    if (document.activeElement !== input) {
+      input.value = '';
+      searchQuery = '';
+      clearBtn?.classList.add('hidden');
+      return;
+    }
     clearBtn?.classList.toggle('hidden', input.value.length === 0);
     // 轻微防抖,避免每敲一个字都重渲染整片卡片
     window.clearTimeout(timer);

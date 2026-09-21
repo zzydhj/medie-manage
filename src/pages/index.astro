@@ -24,7 +24,8 @@ if (!user) {
     <!-- 搜索:按文件名或标题过滤当前公司素材(全公司范围) -->
     <div class="search-control" id="search-control">
       <i class="fa-solid fa-magnifying-glass search-icon"></i>
-      <input id="search-input" type="text" placeholder="搜索文件名 / 标题" autocomplete="off" />
+      <!-- type=search:浏览器不会把保存的登录凭据自动填进搜索类输入框;name=q 进一步明确语义 -->
+      <input id="search-input" type="search" name="q" placeholder="搜索文件名 / 标题" autocomplete="off" />
       <button id="search-clear" class="search-clear hidden" title="清空搜索" type="button">
         <i class="fa-solid fa-xmark"></i>
       </button>
