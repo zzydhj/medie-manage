@@ -540,11 +540,21 @@ function bindMenuTree() {
       const node = row.parentElement as HTMLElement;
       const caret = (e.target as HTMLElement).closest('.menu-caret');
       const hasKids = !!node.querySelector('.menu-children');
-      if (caret && hasKids) {
+      const isTop = node.classList.contains('menu-depth-1');
+      if (isTop && hasKids) {
+        // 一级菜单手风琴:打开某个时关闭其余一级;重复点同一个则开合交替
+        const wasOpen = node.classList.contains('open');
+        document
+          .querySelectorAll('.menu-node.menu-depth-1.open')
+          .forEach((n) => n.classList.remove('open'));
+        node.classList.toggle('open', !wasOpen);
+        if (caret) return; // 点箭头只开合,不改变选中
+      } else if (caret && hasKids) {
         node.classList.toggle('open');
         return;
+      } else if (hasKids) {
+        node.classList.add('open');
       }
-      if (hasKids) node.classList.add('open');
       selectedMenuId = id;
       favView = false;
       saveView();
