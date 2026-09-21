@@ -838,6 +838,53 @@ body {
   border-radius: 8px;
   background: #fff;
 }
+/* 批量上传面板:弹窗内滚动列表,每行 = 文件名 + 状态徽标 */
+.batch-panel {
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  overflow: hidden;
+}
+/* .field/.batch-panel 都有本地 display 规则,需显式提权 .hidden 才能真正隐藏 */
+.batch-panel.hidden { display: none; }
+.field.hidden { display: none; }
+.batch-list {
+  max-height: 260px;
+  overflow-y: auto;
+}
+.batch-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  font-size: 12px;
+  border-bottom: 1px solid #f1f5f9;
+}
+.batch-row:last-child { border-bottom: none; }
+.batch-row-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #334155;
+}
+.batch-row-state {
+  flex-shrink: 0;
+  font-weight: 600;
+  font-size: 11px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: #f1f5f9;
+  color: #64748b;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.batch-row-state.uploading { background: #dbeafe; color: #1d4ed8; }
+.batch-row-state.done { background: #dcfce7; color: #15803d; }
+.batch-row-state.skip { background: #fef9c3; color: #a16207; }
+.batch-row-state.fail { background: #fee2e2; color: #b91c1c; }
 /* ===== 关灯式全屏预览(无边缘包裹) ===== */
 .lightbox {
   position: fixed;

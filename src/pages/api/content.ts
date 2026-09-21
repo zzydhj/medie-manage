@@ -54,6 +54,7 @@ export const GET: APIRoute = async (context) => {
       file_url: it.file_url,
       thumb_url: it.thumb_url,
       filename: it.filename,
+      size: it.size, // 批量上传去重用:同一公司内「文件名 + 大小」相同即视为重复
       sort_order: it.sort_order,
     })),
     favorites,

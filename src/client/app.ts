@@ -19,6 +19,7 @@ interface ItemDTO {
   file_url: string;
   thumb_url: string | null;
   filename: string | null;
+  size: number | null; // 批量上传去重用(与 filename 联合判重)
   sort_order: number;
 }
 interface Org {
@@ -1540,15 +1541,26 @@ async function deleteMenu(id: string) {
 }
 
 // ---------------- 素材 新增(上传) ----------------
+// 批量上传模式:弹窗改为“逐个上传列表”,保存键变为“完成”(仅关闭)
+let batchMode = false;
+
 function openItemModal() {
   if (!selectedMenuId) return toast('请先在左侧选择一个菜单', true);
   pendingUpload = null;
+  batchMode = false;
   ($('#item-menu-label') as HTMLInputElement).value = menuPath(MENUS, selectedMenuId).join(' › ');
   ($('#item-title') as HTMLInputElement).value = '';
   ($('#file-preview') as HTMLElement).classList.add('hidden');
   ($('#file-preview') as HTMLElement).innerHTML = '';
+  // 恢复单文件 UI(批量模式会隐藏标题栏、展开列表面板)
+  ($('#item-title') as HTMLElement | null)?.closest('.field')?.classList.remove('hidden');
+  ($('#batch-panel') as HTMLElement | null)?.classList.add('hidden');
+  const bl = $('#batch-list') as HTMLElement | null;
+  if (bl) bl.innerHTML = '';
+  const save = $('#item-save') as HTMLButtonElement;
+  save.innerHTML = '保存';
+  save.disabled = true;
   ($('#upload-status') as HTMLElement).textContent = '';
-  ($('#item-save') as HTMLButtonElement).disabled = true;
   ($('#file-input') as HTMLInputElement).value = '';
   openModal('item-modal');
 }
@@ -1683,15 +1695,19 @@ async function backfillThumbs(): Promise<void> {
   );
 }
 
-async function handleFileChosen(file: File) {
-  const status = $('#upload-status') as HTMLElement;
-  const preview = $('#file-preview') as HTMLElement;
-  // 客户端仅做基本白名单拦截;最终类型由服务端按 mime+扩展名权威判定
+/** 客户端白名单粗筛:最终类型仍由服务端按 mime+扩展名权威判定 */
+function isSupportedFile(file: File): boolean {
   const looksMedia = file.type.startsWith('video/') || file.type.startsWith('image/');
   const okExt = /\.(png|jpe?g|gif|webp|bmp|svg|mp4|webm|ogv|mov|m4v|pdf|docx?|xlsx?)$/i.test(
     file.name,
   );
-  if (!looksMedia && !okExt) {
+  return looksMedia || okExt;
+}
+
+async function handleFileChosen(file: File) {
+  const status = $('#upload-status') as HTMLElement;
+  const preview = $('#file-preview') as HTMLElement;
+  if (!isSupportedFile(file)) {
     return toast('仅支持图片、视频、PDF、Word、Excel', true);
   }
 
@@ -1778,6 +1794,144 @@ async function saveItem() {
   } catch (e) {
     toast((e as Error).message, true);
   }
+}
+
+/**
+ * 批量上传:选择 / 拖入多个文件时走这里。
+ * 串行逐个上传(不并发:省手机内存与带宽,也避免服务端瞬时压力)。
+ * 去重:同一公司内「文件名 + 大小」已存在即跳过——相机常生成 IMG_0001.jpg 这类同名文件,
+ *      只比文件名会误跳,故必须连字节大小一起判断;同一批里选到两次也只传一次。
+ */
+async function handleBatchChosen(files: File[]) {
+  if (!selectedMenuId) return toast('请先在左侧选择一个菜单', true);
+  batchMode = true;
+
+  const panel = $('#batch-panel') as HTMLElement;
+  const listEl = $('#batch-list') as HTMLElement;
+  const status = $('#upload-status') as HTMLElement;
+  const preview = $('#file-preview') as HTMLElement;
+  const saveBtn = $('#item-save') as HTMLButtonElement;
+  const titleField = ($('#item-title') as HTMLElement | null)?.closest('.field') as HTMLElement | null;
+
+  // 切到批量 UI:藏起单文件预览与标题输入,展开批量列表
+  preview.classList.add('hidden');
+  preview.innerHTML = '';
+  titleField?.classList.add('hidden');
+  panel.classList.remove('hidden');
+  saveBtn.disabled = true;
+  saveBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> 上传中…';
+
+  // 全公司已存在的「文件名|大小」集合
+  const seen = new Set<string>(
+    ITEMS.filter((i) => i.filename).map((i) => `${i.filename}|${i.size ?? ''}`),
+  );
+
+  type Row = { file: File; state: 'pending' | 'uploading' | 'done' | 'skip' | 'fail'; msg: string };
+  const rows: Row[] = [];
+  let skipped = 0;
+  let unsupported = 0;
+  for (const f of files) {
+    const key = `${f.name}|${f.size}`;
+    if (!isSupportedFile(f)) {
+      rows.push({ file: f, state: 'fail', msg: '格式不支持' });
+      unsupported++;
+    } else if (seen.has(key)) {
+      rows.push({ file: f, state: 'skip', msg: '已存在' });
+      skipped++;
+    } else {
+      seen.add(key);
+      rows.push({ file: f, state: 'pending', msg: '等待中' });
+    }
+  }
+
+  const stateText = (r: Row) =>
+    r.state === 'uploading'
+      ? '上传中…'
+      : r.state === 'done'
+        ? '已新增'
+        : r.state === 'skip'
+          ? '跳过(重复)'
+          : r.state === 'fail'
+            ? `失败:${r.msg}`
+            : '等待中';
+
+  listEl.innerHTML = rows
+    .map(
+      (r, i) => `<div class="batch-row" data-idx="${i}">
+        <span class="batch-row-name" title="${escapeHtml(r.file.name)}">${escapeHtml(r.file.name)}</span>
+        <span class="batch-row-state ${r.state}">${stateText(r)}</span>
+      </div>`,
+    )
+    .join('');
+
+  const paint = (r: Row, i: number) => {
+    const el = listEl.querySelector(`[data-idx="${i}"] .batch-row-state`) as HTMLElement | null;
+    if (el) {
+      el.textContent = stateText(r);
+      el.className = `batch-row-state ${r.state}`;
+    }
+  };
+
+  const total = rows.length;
+  let ok = 0;
+  let errCount = 0;
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    if (r.state !== 'pending') continue;
+    r.state = 'uploading';
+    paint(r, i);
+    status.textContent = `正在上传 ${i + 1}/${total}:${r.file.name}`;
+    try {
+      const main = await uploadFile(r.file, 'main');
+      const type = main.type as ItemType; // 服务端权威判定
+      let thumbKey: string | null = null;
+      let thumbUrl: string | null = null;
+      if (type === 'video' || type === 'image') {
+        const blob =
+          type === 'video' ? await generateVideoThumb(r.file) : await generateImageThumb(r.file);
+        if (blob) {
+          const t = await uploadFile(new File([blob], 'thumb.jpg', { type: 'image/jpeg' }), 'thumb');
+          thumbKey = t.key;
+          thumbUrl = t.url;
+        }
+      }
+      await api('/api/items', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          menuId: selectedMenuId,
+          type,
+          title: r.file.name.replace(/\.[^.]+$/, ''),
+          fileKey: main.key,
+          fileUrl: main.url,
+          thumbKey,
+          thumbUrl,
+          mime: main.mime,
+          size: main.size,
+          filename: main.filename,
+        }),
+      });
+      r.state = 'done';
+      ok++;
+    } catch (e) {
+      r.state = 'fail';
+      r.msg = (e as Error).message || '上传失败';
+      errCount++;
+    }
+    paint(r, i);
+  }
+
+  const parts: string[] = [];
+  if (ok) parts.push(`新增 ${ok} 个`);
+  if (skipped) parts.push(`跳过重复 ${skipped} 个`);
+  if (unsupported) parts.push(`忽略不支持 ${unsupported} 个`);
+  if (errCount) parts.push(`失败 ${errCount} 个`);
+  const summary = parts.length ? parts.join(',') : '没有可上传的文件';
+  status.textContent = `完成:${summary}`;
+  saveBtn.disabled = false;
+  saveBtn.innerHTML = '完成';
+  toast(`批量上传完成:${summary}`, ok === 0 && errCount + unsupported > 0);
+  await loadContent();
 }
 
 // ---------------- 公司管理 ----------------
@@ -1948,7 +2102,10 @@ function bindModals() {
   const fi = $('#file-input') as HTMLInputElement;
   dz?.addEventListener('click', () => fi.click());
   fi?.addEventListener('change', () => {
-    if (fi.files?.[0]) handleFileChosen(fi.files[0]);
+    const files = Array.from(fi.files ?? []);
+    if (files.length === 1) handleFileChosen(files[0]);
+    else if (files.length > 1) handleBatchChosen(files);
+    fi.value = ''; // 清空:下次再选到相同文件也能触发 change
   });
   ['dragenter', 'dragover'].forEach((ev) =>
     dz?.addEventListener(ev, (e) => {
@@ -1963,10 +2120,19 @@ function bindModals() {
     }),
   );
   dz?.addEventListener('drop', (e) => {
-    const f = (e as DragEvent).dataTransfer?.files?.[0];
-    if (f) handleFileChosen(f);
+    const files = Array.from((e as DragEvent).dataTransfer?.files ?? []);
+    if (files.length === 1) handleFileChosen(files[0]);
+    else if (files.length > 1) handleBatchChosen(files);
   });
-  $('#item-save')?.addEventListener('click', saveItem);
+  $('#item-save')?.addEventListener('click', () => {
+    if (batchMode) {
+      batchMode = false;
+      ($('#item-save') as HTMLButtonElement).innerHTML = '保存';
+      closeModal('item-modal');
+    } else {
+      saveItem();
+    }
+  });
 
   // 公司新增
   $('#add-org')?.addEventListener('click', async () => {

@@ -193,17 +193,21 @@ if (!user) {
           <input id="item-menu-label" type="text" disabled />
         </div>
         <div class="field">
-          <label>选择文件(图片 / 视频 / PDF / Word / Excel)</label>
+          <label>选择文件(图片 / 视频 / PDF / Word / Excel,可多选)</label>
           <div id="dropzone" class="dropzone">
             <i class="fa-solid fa-cloud-arrow-up text-2xl mb-2 block"></i>
-            点击或拖拽文件到此处上传
+            点击或拖拽文件到此处上传(可多选,重复自动跳过)
           </div>
-          <input id="file-input" type="file" accept="image/*,video/*,.pdf,.doc,.docx,.xls,.xlsx" class="hidden" />
+          <input id="file-input" type="file" accept="image/*,video/*,.pdf,.doc,.docx,.xls,.xlsx" multiple class="hidden" />
         </div>
         <div id="file-preview" class="preview-wrap hidden"></div>
+        <!-- 批量上传:选多个文件时展开,逐个上传并标注 新增 / 跳过重复 / 失败 -->
+        <div id="batch-panel" class="batch-panel hidden">
+          <div id="batch-list" class="batch-list"></div>
+        </div>
         <div class="field">
           <label>标题</label>
-          <input id="item-title" type="text" placeholder="素材标题(默认取文件名)" />
+          <input id="item-title" type="text" name="item-title" placeholder="素材标题(默认取文件名)" autocomplete="off" />
         </div>
         <div id="upload-status" class="text-xs font-semibold text-slate-500"></div>
       </div>
@@ -224,7 +228,7 @@ if (!user) {
       <div class="modal-body">
         <div class="field">
           <label>标题</label>
-          <input id="item-edit-title" type="text" placeholder="素材标题" />
+          <input id="item-edit-title" type="text" name="item-edit-title" placeholder="素材标题" autocomplete="off" />
         </div>
         <div class="field">
           <label>所属分组</label>
@@ -272,8 +276,8 @@ if (!user) {
         </div>
         <div class="field">
           <label>新增用户</label>
-          <input id="new-user-name" type="text" placeholder="用户名" />
-          <input id="new-user-pass" type="password" placeholder="密码(至少 6 位)" />
+          <input id="new-user-name" type="text" name="new-username" placeholder="用户名" autocomplete="off" />
+          <input id="new-user-pass" type="password" name="new-password" placeholder="密码(至少 6 位)" autocomplete="new-password" />
           <select id="new-user-role">
             <option value="user">普通用户(仅下载)</option>
             <option value="admin">公司管理员(可编辑本公司)</option>
