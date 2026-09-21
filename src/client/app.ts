@@ -102,14 +102,14 @@ async function api<T = any>(path: string, opts: RequestInit = {}): Promise<T> {
 
 // ---------------- 提示 ----------------
 let toastTimer: number | undefined;
-function toast(msg: string, isError = false) {
+function toast(msg: string, isError = false, duration = 2200) {
   const el = $('#toast');
   if (!el) return;
   el.textContent = msg;
   el.classList.toggle('error', isError);
   el.classList.add('show');
   window.clearTimeout(toastTimer);
-  toastTimer = window.setTimeout(() => el.classList.remove('show'), 2200);
+  toastTimer = window.setTimeout(() => el.classList.remove('show'), duration);
 }
 
 // ---------------- 弹窗 ----------------
@@ -776,28 +776,89 @@ function shareSupported(): boolean {
   return typeof navigator !== 'undefined' && !!navigator.share;
 }
 
-/** 取素材文件本体并包成 File(单个分享 / 批量分享都要用) */
-async function fetchItemFile(it: ItemDTO): Promise<File> {
+// 分享文件缓存:大文件(视频/大图)取回慢,缓存后重试分享无需重新下载;超上限即清空防占内存
+const SHARE_FILE_CACHE = new Map<string, File>();
+let shareCacheBytes = 0;
+const SHARE_CACHE_MAX = 150 * 1024 * 1024;
+
+/** 取素材文件本体并包成 File(单个分享 / 批量分享都要用)。命中缓存直接返回;传 onProgress 可边下边报进度 */
+async function fetchItemFile(
+  it: ItemDTO,
+  onProgress?: (loaded: number, total: number) => void,
+): Promise<File> {
+  const cached = SHARE_FILE_CACHE.get(it.id);
+  if (cached) return cached;
+
   const res = await fetch(it.file_url);
   if (!res.ok) throw new Error(`「${it.title}」获取失败(${res.status})`);
-  const blob = await res.blob();
-  return new File([blob], it.filename || it.title, { type: blob.type || MIME_BY_TYPE[it.type] });
+
+  const total = Number(res.headers.get('Content-Length') || 0);
+  let blob: Blob;
+  if (onProgress && res.body && total > 0) {
+    // 流式读取,边下边回调(仅在整数百分比变化时触发,避免刷屏)
+    const reader = res.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let loaded = 0;
+    let lastPct = -1;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      chunks.push(value);
+      loaded += value.length;
+      const pct = Math.round((loaded / total) * 100);
+      if (pct !== lastPct) {
+        lastPct = pct;
+        onProgress(loaded, total);
+      }
+    }
+    blob = new Blob(chunks as unknown as BlobPart[], { type: res.headers.get('Content-Type') || MIME_BY_TYPE[it.type] });
+  } else {
+    blob = await res.blob();
+  }
+
+  const file = new File([blob], it.filename || it.title, {
+    type: blob.type || MIME_BY_TYPE[it.type],
+  });
+  if (shareCacheBytes + file.size > SHARE_CACHE_MAX) {
+    SHARE_FILE_CACHE.clear();
+    shareCacheBytes = 0;
+  }
+  SHARE_FILE_CACHE.set(it.id, file);
+  shareCacheBytes += file.size;
+  return file;
 }
 
-/** 系统分享:取文件本体 → File → 原生分享面板(微信/QQ/WhatsApp 等由用户在面板里选) */
+/** 系统分享:先取文件本体(大文件边下边报进度/预估剩余时间)→ File → 原生分享面板 */
 async function shareItemFile(id: string): Promise<void> {
   const it = ITEMS.find((i) => i.id === id);
   if (!it) throw new Error('素材不存在');
   if (!navigator.share)
     throw new Error('当前浏览器不支持分享:可点开大图后长按图片,选择"存储图像/分享"');
-  // 手机网络取原图可能较慢:先提示,避免用户以为点了没反应;也避免重复点
-  toast('正在准备文件,稍后弹出系统分享面板…');
+
+  const cached = SHARE_FILE_CACHE.has(it.id);
+  if (!cached) toast('正在准备文件…');
+
   let file: File;
+  const t0 = performance.now();
   try {
-    file = await fetchItemFile(it);
+    file = await fetchItemFile(it, (loaded, total) => {
+      const pct = Math.round((loaded / total) * 100);
+      const mb = (loaded / 1024 / 1024).toFixed(1);
+      const totalMb = (total / 1024 / 1024).toFixed(1);
+      // 预估剩余时间:已下载量/已耗时 = 速度,再推剩余秒数
+      const elapsed = (performance.now() - t0) / 1000;
+      let eta = '';
+      if (loaded > 0 && elapsed > 0.3) {
+        const remain = Math.max(0, (total - loaded) / (loaded / elapsed));
+        eta = remain >= 60 ? `${Math.round(remain / 60)} 分钟` : `${Math.max(1, Math.round(remain))} 秒`;
+      }
+      toast(`正在下载 ${pct}%(${mb}/${totalMb} MB)${eta ? ` · 约还需 ${eta}` : ''}…`);
+    });
   } catch {
     throw new Error('文件获取失败:可点开大图后长按图片,选择"存储图像/分享"');
   }
+
   try {
     if (navigator.canShare?.({ files: [file] })) {
       await navigator.share({ files: [file], title: it.title, text: it.title });
@@ -813,6 +874,11 @@ async function shareItemFile(id: string): Promise<void> {
   } catch (e) {
     // 用户在系统面板里点取消属正常操作,原样抛给调用方静默处理
     if ((e as Error)?.name === 'AbortError') throw e;
+    // 大文件下载耗时超过浏览器"用户手势"有效期 → 面板弹不出;文件已缓存,提示再点一次即可秒开
+    if (!cached) {
+      toast('文件已下载完成,请再点一次「分享」即可弹出面板', false, 6000);
+      throw Object.assign(new Error('retry'), { name: 'ShareRetry' });
+    }
     throw new Error('分享未唤起:可点开大图后长按图片,选择"存储图像/分享"');
   }
 }
@@ -1055,8 +1121,10 @@ function bindGrid() {
         if (icon) icon.className = 'fa-solid fa-check';
         window.setTimeout(restore, 1200);
       } catch (err) {
-        // 用户在系统面板里点取消属正常操作,不报错
-        if ((err as Error)?.name !== 'AbortError') toast((err as Error).message || '分享失败', true);
+        // 取消分享 / 大文件下载后需再点一次:都属正常流程,不弹错误(提示已在内部给出)
+        const name = (err as Error)?.name;
+        if (name !== 'AbortError' && name !== 'ShareRetry')
+          toast((err as Error).message || '分享失败', true);
         restore();
       } finally {
         btn.disabled = false;
