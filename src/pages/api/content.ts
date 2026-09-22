@@ -92,7 +92,13 @@ export const GET: APIRoute = async (context) => {
     .prepare('SELECT menu_id, COUNT(*) AS c FROM items WHERE org_id = ? GROUP BY menu_id')
     .bind(scope.orgId)
     .all<{ menu_id: string; c: number }>();
-  const counts = aggregateCounts(tree, new Map(grouped.results.map((r) => [r.menu_id, r.c])));
+  const directMap = new Map(grouped.results.map((r) => [r.menu_id, r.c]));
+  const counts = aggregateCounts(tree, directMap);
+  // 直挂计数(未聚合):供前端解释「父级徽章 ≠ 子级徽章之和」——差值即直挂在该级菜单下的素材
+  const directCounts: Record<string, number> = {};
+  directMap.forEach((c, id) => {
+    directCounts[id] = c;
+  });
 
   const favRow = await env.DB
     .prepare(
@@ -104,7 +110,7 @@ export const GET: APIRoute = async (context) => {
 
   // meta=1:首屏定视图用,只要树+计数,不拉素材
   if (url.searchParams.get('meta') === '1') {
-    return json({ menus: tree, counts, favCount });
+    return json({ menus: tree, counts, directCounts, favCount });
   }
 
   const q = (url.searchParams.get('q') ?? '').trim();
@@ -122,7 +128,7 @@ export const GET: APIRoute = async (context) => {
     params.push(`%${q}%`, `%${q}%`);
   } else if (fav) {
     if (!favorites.length) {
-      return json({ menus: tree, counts, favCount, favorites, items: [], total: 0, page, pageSize });
+      return json({ menus: tree, counts, directCounts, favCount, favorites, items: [], total: 0, page, pageSize });
     }
     where.push(`id IN (${favorites.map(() => '?').join(',')})`);
     params.push(...favorites);
@@ -148,6 +154,7 @@ export const GET: APIRoute = async (context) => {
   return json({
     menus: tree,
     counts,
+    directCounts,
     favCount,
     favorites,
     total,

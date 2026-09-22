@@ -46,6 +46,8 @@ let TOTAL = 0;
 let HAS_MORE = false;
 let loadingMore = false;
 let COUNTS: Record<string, number> = {};
+// 直挂计数(服务端未聚合版):父级徽章 = 直挂 + 子树,徽章 tooltip 用它解释与子级之和的差值
+let DIRECT_COUNTS: Record<string, number> = {};
 let FAV_COUNT = 0;
 let selectedMenuId: string | null = null;
 // 搜索关键词:空=按菜单浏览;非空=全公司范围按标题/文件名过滤
@@ -748,11 +750,15 @@ async function loadContent() {
   }
   const paintedStale = paintStaleList(); // 命中=刷新秒开;未命中再铺骨架屏
   if (!paintedStale) renderSkeleton();
-  const meta = await api<{ menus: MenuNode[]; counts: Record<string, number>; favCount: number }>(
-    '/api/content?meta=1',
-  );
+  const meta = await api<{
+    menus: MenuNode[];
+    counts: Record<string, number>;
+    directCounts?: Record<string, number>;
+    favCount: number;
+  }>('/api/content?meta=1');
   MENUS = meta.menus;
   COUNTS = meta.counts ?? {};
+  DIRECT_COUNTS = meta.directCounts ?? {};
   FAV_COUNT = meta.favCount ?? 0;
 
   // 校验视图:无记录或已失效(菜单被删/换公司)则用默认(手机端首屏=收藏,电脑端=第一个叶子菜单)
@@ -807,6 +813,12 @@ function countItemsIn(menuId: string): number {
 }
 function countFavItems(): number {
   return FAV_COUNT;
+}
+/** 父级徽章 = 直挂 + 子树合计;既有直挂素材又有子菜单时给徽章加 tooltip,
+ * 否则用户会因「父级数 ≠ 子级数之和」怀疑数据错了(差值正是直挂部分) */
+function directHint(n: MenuNode): string {
+  const d = DIRECT_COUNTS[n.id] ?? 0;
+  return d > 0 && n.children?.length ? ` title="含 ${d} 个直挂本级"` : '';
 }
 // 收藏虚拟节点:固定菜单树最顶,跨菜单展示个人收藏(非真菜单:无子级/不可拖/不进菜单管理)
 function renderFavRow(): string {
@@ -864,7 +876,7 @@ function renderMenuList(nodes: MenuNode[], parentId: string, depth: number): str
           <div class="menu-row ${isActive ? 'active' : ''}" data-id="${n.id}">
             <span class="menu-caret">${hasKids ? '›' : ''}</span>
             <span class="menu-label" title="${escapeHtml(n.name)}">${escapeHtml(n.name)}</span>
-            <span class="menu-count">${countItemsIn(n.id)}</span>
+            <span class="menu-count"${directHint(n)}>${countItemsIn(n.id)}</span>
             <span class="menu-actions">${handle}${adminBtns}</span>
           </div>
           ${
