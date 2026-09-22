@@ -459,8 +459,15 @@ function readListCache(key: string): ListCache | null {
 }
 function writeListCache() {
   try {
-    if (!ITEMS.length) return;
     const key = listKey();
+    // 列表已空:必须删掉旧缓存。否则(如删光某菜单)旧的非空列表仍躺在 localStorage,
+    // 刷新后点该菜单会被 paintStaleList 先画出来(闪一下已删除的内容),等服务端返回空才清。
+    if (!ITEMS.length) {
+      localStorage.removeItem(key);
+      const reg: string[] = JSON.parse(localStorage.getItem(LIST_REGISTRY) || '[]');
+      localStorage.setItem(LIST_REGISTRY, JSON.stringify(reg.filter((k) => k !== key)));
+      return;
+    }
     const payload: ListCache = {
       items: ITEMS.slice(0, 500),
       total: TOTAL,
