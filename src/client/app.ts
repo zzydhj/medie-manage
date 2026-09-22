@@ -2275,12 +2275,14 @@ function openItemModal() {
   openModal('item-modal');
 }
 
-/** 上传走 XHR:fetch 拿不到上传进度事件。onProgress(已传字节,总字节) 驱动单文件/批量进度 */
+/** 上传走 XHR:fetch 拿不到上传进度事件。onProgress(已传字节,总字节) 驱动单文件/批量进度。
+ * 超过 CHUNK_THRESHOLD 的文件走分片(uploadFileChunked):Cloudflare 边缘层单请求体上限 100MB,大文件整传会被 413 拒收 */
 function uploadFile(
   file: File,
   kind: 'main' | 'thumb',
   onProgress?: (loaded: number, total: number) => void,
 ): Promise<any> {
+  if (file.size > CHUNK_THRESHOLD) return uploadFileChunked(file, kind, onProgress);
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open('POST', '/api/upload');
@@ -2306,6 +2308,98 @@ function uploadFile(
     fd.append('kind', kind);
     xhr.send(fd);
   });
+}
+
+// ---------------- 分片上传(大文件) ----------------
+// Cloudflare 边缘层单请求体上限 100MB(Free 计划):大视频传完 100% 才在边缘被 413 拒收。
+// 超阈值文件切 10MB 分片逐片传(XHR 原始 body 拿单片进度),服务端 R2 multipart 组装;
+// 进度按全文件聚合(已完成片字节 + 当前片已传字节),UI 与单文件上传完全同构。
+const CHUNK_THRESHOLD = 50 * 1024 * 1024;
+const CHUNK_SIZE = 10 * 1024 * 1024;
+
+/** 传一个分片;失败由调用方重试(同 partNumber 重传幂等,覆盖旧片) */
+function uploadChunk(
+  url: string,
+  blob: Blob,
+  onProgress?: (loaded: number) => void,
+): Promise<{ partNumber: number; etag: string }> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', url);
+    Object.entries(orgHeaders()).forEach(([k, v]) => xhr.setRequestHeader(k, v));
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable && onProgress) onProgress(e.loaded);
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          resolve(JSON.parse(xhr.responseText));
+          return;
+        } catch {
+          /* 落到错误分支 */
+        }
+      }
+      let msg = `分片上传失败(HTTP ${xhr.status})`;
+      try {
+        msg = JSON.parse(xhr.responseText).error || msg;
+      } catch {
+        /* 边缘层错误无 JSON,保留状态码文案 */
+      }
+      reject(new Error(msg));
+    };
+    xhr.onerror = () => reject(new Error('网络中断'));
+    xhr.send(blob);
+  });
+}
+
+async function uploadFileChunked(
+  file: File,
+  kind: 'main' | 'thumb',
+  onProgress?: (loaded: number, total: number) => void,
+): Promise<any> {
+  const mime = file.type || 'application/octet-stream';
+  const init = await api<{ key: string; uploadId: string }>('/api/upload/mp?step=init', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: file.name, size: file.size, mime, kind }),
+  });
+  const qs = `key=${encodeURIComponent(init.key)}&uploadId=${encodeURIComponent(init.uploadId)}`;
+  const parts: { partNumber: number; etag: string }[] = [];
+  const total = file.size;
+  let done = 0;
+  try {
+    for (let start = 0, n = 1; start < total; start += CHUNK_SIZE, n++) {
+      const blob = file.slice(start, Math.min(start + CHUNK_SIZE, total));
+      // 单片自动重试一次:网络抖动不必废掉整批进度
+      let lastErr: Error | null = null;
+      let etag = '';
+      for (let attempt = 0; attempt < 2 && !etag; attempt++) {
+        try {
+          const r = await uploadChunk(
+            `/api/upload/mp?step=part&${qs}&partNumber=${n}`,
+            blob,
+            (loaded) => onProgress?.(done + loaded, total),
+          );
+          etag = r.etag;
+        } catch (e) {
+          lastErr = e as Error;
+        }
+      }
+      if (!etag) throw lastErr || new Error('分片上传失败');
+      parts.push({ partNumber: n, etag });
+      done += blob.size;
+      onProgress?.(done, total);
+    }
+    return await api(`/api/upload/mp?step=complete&${qs}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ parts, name: file.name, mime }),
+    });
+  } catch (e) {
+    // 失败时 best-effort 清理远端分片,不留垃圾 multipart 会话
+    api(`/api/upload/mp?step=abort&${qs}`, { method: 'POST' }).catch(() => {});
+    throw e;
+  }
 }
 const fmtMb = (n: number) => `${(n / 1024 / 1024).toFixed(1)}MB`;
 /** 字节人性化:B/KB/MB/GB/TB;≥100 取整,否则一位小数 */

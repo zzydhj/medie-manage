@@ -3,15 +3,15 @@ import { err, getEnv, isResponse, json, requireAdminOrg } from '../../lib/api';
 
 const MAX_SIZE = 100 * 1024 * 1024; // 100MB 上限
 
-function extFromName(name: string): string {
+export function extFromName(name: string): string {
   const i = name.lastIndexOf('.');
   return i >= 0 ? name.slice(i).toLowerCase() : '';
 }
 
 type ItemType = 'image' | 'video' | 'pdf' | 'word' | 'excel';
 
-// 按 mime 优先、扩展名兜底识别类型(浏览器对 Office 文件常报通用 mime)
-function guessType(mime: string, filename: string): ItemType | null {
+// 按 mime 优先、扩展名兜底识别类型(浏览器对 Office 文件常报通用 mime);分片上传(mp.ts)复用
+export function guessType(mime: string, filename: string): ItemType | null {
   const m = (mime || '').toLowerCase();
   const ext = extFromName(filename);
   if (m.startsWith('image/')) return 'image';
