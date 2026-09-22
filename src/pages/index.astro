@@ -194,6 +194,26 @@ if (!user) {
     </div>
   </div>
 
+  <!-- ===== 菜单 移动到 弹窗(管理员:跨分组/改父级,补拖拽做不到的场景) ===== -->
+  <div id="menu-move-modal" class="modal-mask">
+    <div class="modal-box">
+      <div class="modal-head">
+        <span>移动菜单</span>
+        <button class="mini-btn" data-close="menu-move-modal"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div class="modal-body">
+        <div class="field">
+          <label id="menu-move-tip">移动到</label>
+          <select id="menu-move-parent"></select>
+        </div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn btn-ghost" data-close="menu-move-modal">取消</button>
+        <button id="menu-move-confirm" class="btn btn-primary">移动</button>
+      </div>
+    </div>
+  </div>
+
   <!-- ===== 素材 新增 弹窗 ===== -->
   <div id="item-modal" class="modal-mask">
     <div class="modal-box">

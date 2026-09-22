@@ -848,6 +848,7 @@ function renderMenuList(nodes: MenuNode[], parentId: string, depth: number): str
       const adminBtns = isAdmin
         ? `<button class="mini-btn" data-act="add-child" data-id="${n.id}" title="新增子菜单"><i class="fa-solid fa-plus"></i></button>
            <button class="mini-btn" data-act="edit-menu" data-id="${n.id}" title="重命名"><i class="fa-solid fa-pen"></i></button>
+           <button class="mini-btn" data-act="move-menu" data-id="${n.id}" title="移动到其它分组"><i class="fa-solid fa-folder-open"></i></button>
            <button class="mini-btn danger" data-act="del-menu" data-id="${n.id}" title="删除"><i class="fa-solid fa-trash"></i></button>`
         : '';
       const handle = isAdmin ? `<i class="fa-solid fa-grip-vertical drag-handle" title="拖拽排序"></i>` : '';
@@ -893,7 +894,8 @@ function bindMenuTree() {
         else if (act === 'edit-menu') {
           const m = findMenu(MENUS, id);
           openMenuModal(m?.parent_id ?? null, m?.name ?? '', id);
-        } else if (act === 'del-menu') deleteMenu(id);
+        } else if (act === 'move-menu') openMenuMoveModal(id);
+        else if (act === 'del-menu') deleteMenu(id);
         return;
       }
       // 收藏虚拟节点:进入收藏视图(跨菜单、个人)
@@ -985,6 +987,59 @@ function bindMenuTree() {
         }),
       );
     });
+  }
+}
+
+// ---------------- 菜单 移动到(跨分组/改父级,补拖拽做不到的场景) ----------------
+let movingMenuId: string | null = null;
+/** 收集某菜单及其所有子孙 id:移动目标需排除这些,防止把父级移进自己的子树(成环) */
+function selfAndDescendantIds(id: string): string[] {
+  const out: string[] = [];
+  const walk = (n: MenuNode) => {
+    out.push(n.id);
+    n.children.forEach(walk);
+  };
+  const node = findMenu(MENUS, id);
+  if (node) walk(node);
+  return out;
+}
+function openMenuMoveModal(id: string) {
+  const node = findMenu(MENUS, id);
+  if (!node) return;
+  movingMenuId = id;
+  const banned = new Set(selfAndDescendantIds(id));
+  const sel = $('#menu-move-parent') as HTMLSelectElement;
+  sel.innerHTML = [
+    `<option value="">顶级(一级菜单)</option>`,
+    ...flattenMenus(MENUS)
+      .filter((m) => !banned.has(m.id))
+      .map((m) => `<option value="${m.id}">${escapeHtml(m.label)}</option>`),
+  ].join('');
+  sel.value = node.parent_id ?? '';
+  const tip = $('#menu-move-tip');
+  if (tip) tip.textContent = `把「${node.name}」移动到`;
+  openModal('menu-move-modal');
+}
+async function confirmMenuMove() {
+  if (!movingMenuId) return;
+  const raw = ($('#menu-move-parent') as HTMLSelectElement).value;
+  const parentId = raw ? raw : null;
+  // 追加到目标父级末尾:新兄弟数即末尾下标(服务端还会再 clamp 一次)
+  const target = parentId ? findMenu(MENUS, parentId) : null;
+  const newIndex = parentId
+    ? (target?.children ?? []).filter((c) => c.id !== movingMenuId).length
+    : MENUS.filter((r) => r.id !== movingMenuId).length;
+  try {
+    await api('/api/menus/reorder', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: movingMenuId, parentId, newIndex }),
+    });
+    closeModal('menu-move-modal');
+    toast('已移动');
+    await loadContent();
+  } catch (e) {
+    toast((e as Error).message, true);
   }
 }
 
@@ -2883,6 +2938,8 @@ async function refreshUserList() {
 
 // ---------------- 弹窗事件绑定 ----------------
 function bindModals() {
+  // 菜单移动到(跨分组/改父级)
+  $('#menu-move-confirm')?.addEventListener('click', confirmMenuMove);
   // 菜单保存
   $('#menu-save')?.addEventListener('click', async () => {
     const name = (($('#menu-name') as HTMLInputElement).value || '').trim();
