@@ -562,8 +562,8 @@ function bindMenuTree() {
       document.querySelectorAll('.menu-row.active').forEach((r) => r.classList.remove('active'));
       row.classList.add('active');
       renderGrid();
-      // 移动端选中后收起侧栏
-      if (window.innerWidth < 1024) toggleSidebarDrawer(false);
+      // 移动端:点叶子菜单才收起侧栏;点有子级的菜单保持展开,方便继续看手风琴/选子级
+      if (window.innerWidth < 1024 && !hasKids) toggleSidebarDrawer(false);
     });
   });
 
