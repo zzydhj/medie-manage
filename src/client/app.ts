@@ -971,7 +971,7 @@ function renderGrid() {
   // 全部类型均可在灯箱内预览:图片/视频/PDF 原生渲染,Word/Excel 由客户端解析渲染
   const previewable = items.filter((it) => TYPE_META[it.type].preview);
   PREVIEW_LIST = previewable.map((it) => ({
-    src: displayUrl(it),
+    src: it.file_url,
     title: it.title,
     filename: it.filename || '',
     kind: it.type as PreviewItem['kind'],
@@ -1027,7 +1027,7 @@ function renderGrid() {
           ? `<button class="copy-btn share solo" data-act="share-item" data-id="${it.id}" title="分享"><i class="fa-solid fa-share-nodes"></i></button>`
           : '') +
         (showCopy
-          ? `<button class="copy-btn" data-act="copy-image" data-url="${displayUrl(it)}" title="复制图片"><i class="fa-regular fa-copy"></i></button>`
+          ? `<button class="copy-btn" data-act="copy-image" data-url="${it.file_url}" title="复制图片"><i class="fa-regular fa-copy"></i></button>`
           : '');
       const thumbInner = isMedia
         ? previewSrc
@@ -2137,13 +2137,14 @@ function generateVideoThumb(file: File): Promise<Blob | null> {
   });
 }
 
-/** 生成图片缩略图:长边缩到 MAX px 压成 JPEG。卡片列表只加载它,原图仅用于灯箱/复制/分享/下载 */
-async function generateImageThumb(file: File, MAX = 640, force = false): Promise<Blob | null> {
+/** 生成图片缩略图:长边缩到 640px 压成 JPEG。卡片列表只加载它,原图仅用于灯箱/复制/分享/下载 */
+async function generateImageThumb(file: File): Promise<Blob | null> {
   try {
     const bmp = await createImageBitmap(file);
+    const MAX = 640;
     const scale = Math.min(1, MAX / Math.max(bmp.width, bmp.height));
-    // 原图本来就足够小:不造缩略图,省一次上传,卡片直接用原图也不卡(force=HEIC 预览必须产出)
-    if (!force && scale === 1 && file.size < 160 * 1024) {
+    // 原图本来就足够小:不造缩略图,省一次上传,卡片直接用原图也不卡
+    if (scale === 1 && file.size < 160 * 1024) {
       bmp.close?.();
       return null;
     }
@@ -2173,7 +2174,7 @@ async function generateImageThumb(file: File, MAX = 640, force = false): Promise
 function isHeicName(name: string): boolean {
   return /\.(heic|heif)$/i.test(name || '');
 }
-/** HEIC → JPEG(动态 import heic2any:不传 HEIC 就不下载这个库) */
+/** HEIC → JPEG(动态 import heic2any:不传 HEIC 就不下载这个库);上传前转码,入库即 JPEG */
 async function heicToJpeg(file: File): Promise<Blob | null> {
   try {
     const heic2any = (await import('heic2any')).default as (
@@ -2186,17 +2187,13 @@ async function heicToJpeg(file: File): Promise<Blob | null> {
     return null;
   }
 }
-/** 图片缩略图统一入口:HEIC 先转 JPEG 再缩到 1280px 作预览(兼供灯箱/复制),其余走常规 640px */
-async function generateThumbFor(file: File): Promise<Blob | null> {
-  if (!isHeicName(file.name)) return generateImageThumb(file);
+/** 苹果 HEIC/HEIF 上传前统一转成 JPG:浏览器解不了 HEIC,转完后续全链路走普通图片 */
+async function convertHeicIfNeeded(file: File, onStatus?: (s: string) => void): Promise<File> {
+  if (!isHeicName(file.name)) return file;
+  onStatus?.('HEIC 转码成 JPG 中…');
   const jpeg = await heicToJpeg(file);
-  if (!jpeg) return null;
-  return generateImageThumb(new File([jpeg], 'preview.jpg', { type: 'image/jpeg' }), 1280, true);
-}
-/** HEIC 展示/复制用转码预览(缩略图),下载仍给原文件保真 */
-function displayUrl(it: ItemDTO): string {
-  if (it.type === 'image' && isHeicName(it.filename || '')) return it.thumb_url || it.file_url;
-  return it.file_url;
+  if (!jpeg) throw new Error('HEIC 转码失败:请在手机上导出为 JPEG 后重传');
+  return new File([jpeg], file.name.replace(/\.(heic|heif)$/i, '.jpg'), { type: 'image/jpeg' });
 }
 
 /** 给无缩略图的老图片补生成:拉原图 → 本地生成 → 上传 → 回写卡片。管理员一次性操作 */
@@ -2260,7 +2257,9 @@ async function handleFileChosen(file: File) {
 
   ($('#item-save') as HTMLButtonElement).disabled = true;
   try {
-    const main = await uploadFile(file, 'main', (loaded, total) => {
+    // 苹果 HEIC:上传前先转成 JPG,入库即全平台可看的 JPEG
+    const work = await convertHeicIfNeeded(file, (s) => (status.textContent = s));
+    const main = await uploadFile(work, 'main', (loaded, total) => {
       status.textContent = `上传中 ${Math.round((loaded / total) * 100)}%(${fmtMb(loaded)}/${fmtMb(total)})`;
     });
     const type = main.type as ItemType; // 服务端权威判定:image/video/pdf/word/excel
@@ -2268,7 +2267,7 @@ async function handleFileChosen(file: File) {
     let thumbUrl: string | null = null;
     if (type === 'video') {
       status.textContent = '生成视频缩略图…';
-      const blob = await generateVideoThumb(file);
+      const blob = await generateVideoThumb(work);
       if (blob) {
         const thumbFile = new File([blob], 'thumb.jpg', { type: 'image/jpeg' });
         const thumb = await uploadFile(thumbFile, 'thumb', (l, t) => {
@@ -2278,10 +2277,8 @@ async function handleFileChosen(file: File) {
         thumbUrl = thumb.url;
       }
     } else if (type === 'image') {
-      status.textContent = isHeicName(file.name)
-        ? 'HEIC 转码中…(苹果格式需转成 JPEG 预览)'
-        : '生成图片缩略图…';
-      const blob = await generateThumbFor(file);
+      status.textContent = '生成图片缩略图…';
+      const blob = await generateImageThumb(work);
       if (blob) {
         const thumbFile = new File([blob], 'thumb.jpg', { type: 'image/jpeg' });
         const thumb = await uploadFile(thumbFile, 'thumb', (l, t) => {
@@ -2303,8 +2300,8 @@ async function handleFileChosen(file: File) {
     };
     // 预览区:图片/视频直接展示,PDF 内嵌,Word/Excel 显示类型图标
     const meta = TYPE_META[type];
-    const sizeMb = (file.size / 1024 / 1024).toFixed(1);
-    const cap = `<div class="text-xs text-slate-500">${escapeHtml(file.name)}<br/>${meta.label} · ${sizeMb}MB</div>`;
+    const sizeMb = (work.size / 1024 / 1024).toFixed(1);
+    const cap = `<div class="text-xs text-slate-500">${escapeHtml(work.name)}<br/>${meta.label} · ${sizeMb}MB</div>`;
     preview.classList.remove('hidden');
     if (type === 'image') preview.innerHTML = `<img src="${thumbUrl || main.url}" alt="预览"/>${cap}`;
     else if (type === 'video') preview.innerHTML = `<video src="${main.url}" muted></video>${cap}`;
@@ -2313,7 +2310,7 @@ async function handleFileChosen(file: File) {
     else
       preview.innerHTML = `<div class="doc-icon ${meta.cls}"><i class="fa-solid ${meta.icon}"></i></div>${cap}`;
     const titleInput = $('#item-title') as HTMLInputElement;
-    if (!titleInput.value) titleInput.value = file.name.replace(/\.[^.]+$/, '');
+    if (!titleInput.value) titleInput.value = work.name.replace(/\.[^.]+$/, '');
     status.textContent = '上传完成,可保存。';
     ($('#item-save') as HTMLButtonElement).disabled = false;
   } catch (e) {
@@ -2441,9 +2438,13 @@ async function handleBatchChosen(files: File[]) {
     paint(r, i);
     status.textContent = `正在上传 ${i + 1}/${total}:${r.file.name}`;
     try {
+      // 苹果 HEIC:上传前先转成 JPG
+      const work = await convertHeicIfNeeded(r.file, (s) => {
+        status.textContent = `${i + 1}/${total}:${s}`;
+      });
       // 服务端全量判重(前端只持有已加载页):重复直接跳过,不浪费上传流量
       const dup = await api<{ dup: boolean }>(
-        `/api/items?filename=${encodeURIComponent(r.file.name)}&size=${r.file.size}`,
+        `/api/items?filename=${encodeURIComponent(work.name)}&size=${work.size}`,
       );
       if (dup.dup) {
         r.state = 'skip';
@@ -2452,7 +2453,7 @@ async function handleBatchChosen(files: File[]) {
         skipped++;
         continue;
       }
-      const main = await uploadFile(r.file, 'main', (loaded, total) => {
+      const main = await uploadFile(work, 'main', (loaded, total) => {
         paint(r, i, Math.round((loaded / total) * 100));
       });
       const type = main.type as ItemType; // 服务端权威判定
@@ -2460,7 +2461,7 @@ async function handleBatchChosen(files: File[]) {
       let thumbUrl: string | null = null;
       if (type === 'video' || type === 'image') {
         const blob =
-          type === 'video' ? await generateVideoThumb(r.file) : await generateThumbFor(r.file);
+          type === 'video' ? await generateVideoThumb(work) : await generateImageThumb(work);
         if (blob) {
           const t = await uploadFile(new File([blob], 'thumb.jpg', { type: 'image/jpeg' }), 'thumb');
           thumbKey = t.key;
@@ -2473,7 +2474,7 @@ async function handleBatchChosen(files: File[]) {
         body: JSON.stringify({
           menuId: selectedMenuId,
           type,
-          title: r.file.name.replace(/\.[^.]+$/, ''),
+          title: work.name.replace(/\.[^.]+$/, ''),
           fileKey: main.key,
           fileUrl: main.url,
           thumbKey,
