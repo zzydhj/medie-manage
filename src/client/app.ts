@@ -428,6 +428,8 @@ async function ensureFill() {
 /** 重置到第一页并重渲染(切菜单/搜索/收藏/刷新列表用) */
 async function refreshList() {
   PAGE = 1;
+  // 无缓存的切换:先铺骨架屏,视觉上立即有响应
+  if (!pageCache.has(pageCacheKey(1))) renderSkeleton();
   const d = await fetchPage(1);
   ITEMS = d.items;
   TOTAL = d.total;
@@ -470,6 +472,50 @@ function updateGridFooter() {
   if (loadingMore) f.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> 加载中…';
   else f.textContent = `已加载全部 ${TOTAL} 个`;
 }
+/** 预取某视图第一页进页缓存:悬停/空闲时调用,切换命中缓存=秒开 */
+function prefetchMenuPage(menuId: string | null, fav: boolean) {
+  if (!activeOrgId) return;
+  // 与 pageCacheKey 对齐:预取假定无搜索词(切菜单会 resetSearch)
+  const key = `${activeOrgId}||${fav ? 'fav' : menuId ?? ''}|1`;
+  if (pageCache.has(key)) return;
+  const p = new URLSearchParams({ page: '1', pageSize: String(PAGE_SIZE) });
+  if (fav) p.set('fav', '1');
+  else if (menuId) p.set('menuId', menuId);
+  api<PageData>(`/api/content?${p.toString()}`)
+    .then((d) => pageCache.set(key, d))
+    .catch(() => {});
+}
+let prefetchTimer: number | undefined;
+/** 首屏渲染稳定后,后台低速预取收藏+计数>0 的菜单第一页(上限12),不抢首屏带宽 */
+function schedulePrefetch() {
+  window.clearTimeout(prefetchTimer);
+  const org = activeOrgId;
+  const flat: string[] = [];
+  const walk = (ns: MenuNode[]) =>
+    ns.forEach((n) => {
+      flat.push(n.id);
+      if (n.children?.length) walk(n.children);
+    });
+  walk(MENUS);
+  const queue = flat.filter((id) => (COUNTS[id] ?? 0) > 0).slice(0, 12);
+  let i = 0;
+  const step = () => {
+    if (activeOrgId !== org) return; // 切公司:预取作废
+    if (i === 0) prefetchMenuPage(null, true);
+    else prefetchMenuPage(queue[i - 1], false);
+    i++;
+    if (i <= queue.length) prefetchTimer = window.setTimeout(step, 400);
+  };
+  prefetchTimer = window.setTimeout(step, 1200);
+}
+/** 无缓存切换时立即铺骨架屏:视觉"瞬间有响应",避免空白等待感 */
+function renderSkeleton() {
+  const grid = $('#media-grid');
+  if (!grid) return;
+  grid.innerHTML = Array.from({ length: 12 })
+    .map(() => `<div class="skel-card"><div class="skel-thumb"></div><div class="skel-line"></div></div>`)
+    .join('');
+}
 
 // ---------------- 加载内容 ----------------
 async function loadContent() {
@@ -511,6 +557,7 @@ async function loadContent() {
   await refreshList();
   renderSidebar();
   if (isAdmin) $('#add-root-menu')?.classList.remove('hidden');
+  schedulePrefetch(); // 首屏稳定后后台预取各菜单第一页,让后续切换命中缓存
 }
 
 function findMenu(nodes: MenuNode[], id: string): MenuNode | null {
@@ -613,6 +660,11 @@ let menuSortables: Sortable[] = [];
 function bindMenuTree() {
   // 展开/选中 + 管理员按钮
   document.querySelectorAll<HTMLElement>('.menu-row').forEach((row) => {
+    // 悬停预取第一页:切过去时命中缓存=秒开(移动端无 hover,靠空闲预取兜底)
+    row.addEventListener('mouseenter', () => {
+      if (row.dataset.fav) prefetchMenuPage(null, true);
+      else if (row.dataset.id) prefetchMenuPage(row.dataset.id, false);
+    });
     row.addEventListener('click', (e) => {
       const btn = (e.target as HTMLElement).closest('[data-act]') as HTMLElement | null;
       const id = row.dataset.id!;
@@ -1830,16 +1882,39 @@ function openItemModal() {
   openModal('item-modal');
 }
 
-async function uploadFile(file: File, kind: 'main' | 'thumb'): Promise<any> {
-  const fd = new FormData();
-  fd.append('file', file);
-  fd.append('kind', kind);
-  // 上传需要带 org 头
-  const res = await fetch('/api/upload', { method: 'POST', headers: orgHeaders(), body: fd });
-  const data: any = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || '上传失败');
-  return data;
+/** 上传走 XHR:fetch 拿不到上传进度事件。onProgress(已传字节,总字节) 驱动单文件/批量进度 */
+function uploadFile(
+  file: File,
+  kind: 'main' | 'thumb',
+  onProgress?: (loaded: number, total: number) => void,
+): Promise<any> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', '/api/upload');
+    // 上传需要带 org 头
+    Object.entries(orgHeaders()).forEach(([k, v]) => xhr.setRequestHeader(k, v));
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable && onProgress) onProgress(e.loaded, e.total);
+    };
+    xhr.onload = () => {
+      let data: any = {};
+      try {
+        data = JSON.parse(xhr.responseText || '{}');
+      } catch {
+        data = {};
+      }
+      if (xhr.status >= 200 && xhr.status < 300) resolve(data);
+      else reject(new Error(data.error || `上传失败(HTTP ${xhr.status})`));
+    };
+    xhr.onerror = () => reject(new Error('网络中断:上传失败,请检查网络后重试'));
+    xhr.onabort = () => reject(new Error('上传已取消'));
+    const fd = new FormData();
+    fd.append('file', file);
+    fd.append('kind', kind);
+    xhr.send(fd);
+  });
 }
+const fmtMb = (n: number) => `${(n / 1024 / 1024).toFixed(1)}MB`;
 
 function generateVideoThumb(file: File): Promise<Blob | null> {
   return new Promise((resolve) => {
@@ -1977,10 +2052,11 @@ async function handleFileChosen(file: File) {
     return toast('仅支持图片、视频、PDF、Word、Excel', true);
   }
 
-  status.textContent = '上传中…';
   ($('#item-save') as HTMLButtonElement).disabled = true;
   try {
-    const main = await uploadFile(file, 'main');
+    const main = await uploadFile(file, 'main', (loaded, total) => {
+      status.textContent = `上传中 ${Math.round((loaded / total) * 100)}%(${fmtMb(loaded)}/${fmtMb(total)})`;
+    });
     const type = main.type as ItemType; // 服务端权威判定:image/video/pdf/word/excel
     let thumbKey: string | null = null;
     let thumbUrl: string | null = null;
@@ -1989,7 +2065,9 @@ async function handleFileChosen(file: File) {
       const blob = await generateVideoThumb(file);
       if (blob) {
         const thumbFile = new File([blob], 'thumb.jpg', { type: 'image/jpeg' });
-        const thumb = await uploadFile(thumbFile, 'thumb');
+        const thumb = await uploadFile(thumbFile, 'thumb', (l, t) => {
+          status.textContent = `缩略图上传中 ${Math.round((l / t) * 100)}%`;
+        });
         thumbKey = thumb.key;
         thumbUrl = thumb.url;
       }
@@ -1998,7 +2076,9 @@ async function handleFileChosen(file: File) {
       const blob = await generateImageThumb(file);
       if (blob) {
         const thumbFile = new File([blob], 'thumb.jpg', { type: 'image/jpeg' });
-        const thumb = await uploadFile(thumbFile, 'thumb');
+        const thumb = await uploadFile(thumbFile, 'thumb', (l, t) => {
+          status.textContent = `缩略图上传中 ${Math.round((l / t) * 100)}%`;
+        });
         thumbKey = thumb.key;
         thumbUrl = thumb.url;
       }
@@ -2125,17 +2205,22 @@ async function handleBatchChosen(files: File[]) {
     .map(
       (r, i) => `<div class="batch-row" data-idx="${i}">
         <span class="batch-row-name" title="${escapeHtml(r.file.name)}">${escapeHtml(r.file.name)}</span>
+        <span class="batch-row-prog"><i data-bar style="width:0%"></i></span>
         <span class="batch-row-state ${r.state}">${stateText(r)}</span>
       </div>`,
     )
     .join('');
 
-  const paint = (r: Row, i: number) => {
-    const el = listEl.querySelector(`[data-idx="${i}"] .batch-row-state`) as HTMLElement | null;
+  const paint = (r: Row, i: number, pct?: number) => {
+    const rowEl = listEl.querySelector(`[data-idx="${i}"]`) as HTMLElement | null;
+    if (!rowEl) return;
+    const el = rowEl.querySelector('.batch-row-state') as HTMLElement | null;
     if (el) {
-      el.textContent = stateText(r);
+      el.textContent = pct !== undefined ? `${pct}%` : stateText(r);
       el.className = `batch-row-state ${r.state}`;
     }
+    const bar = rowEl.querySelector('[data-bar]') as HTMLElement | null;
+    if (bar) bar.style.width = `${pct ?? (r.state === 'done' ? 100 : 0)}%`;
   };
 
   const total = rows.length;
@@ -2159,7 +2244,9 @@ async function handleBatchChosen(files: File[]) {
         skipped++;
         continue;
       }
-      const main = await uploadFile(r.file, 'main');
+      const main = await uploadFile(r.file, 'main', (loaded, total) => {
+        paint(r, i, Math.round((loaded / total) * 100));
+      });
       const type = main.type as ItemType; // 服务端权威判定
       let thumbKey: string | null = null;
       let thumbUrl: string | null = null;
