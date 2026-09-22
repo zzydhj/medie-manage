@@ -202,6 +202,10 @@ async function init() {
     },
     { passive: true },
   );
+  // 窗口变大后可能又不足一屏:补页
+  window.addEventListener('resize', () => {
+    ensureFill();
+  });
 
   await loadContent();
 }
@@ -395,8 +399,31 @@ function viewQuery(page: number): string {
   else if (selectedMenuId) p.set('menuId', selectedMenuId);
   return p.toString();
 }
+// 页缓存:切回看过的视图/页直接命中内存,免网络往返 → 切换秒开;任何变更(loadContent/收藏)会清空
+const pageCache = new Map<string, PageData>();
+function pageCacheKey(page: number): string {
+  return `${activeOrgId}|${searchQuery.trim()}|${favView ? 'fav' : selectedMenuId ?? ''}|${page}`;
+}
+function clearPageCache() {
+  pageCache.clear();
+}
 async function fetchPage(page: number): Promise<PageData> {
-  return api<PageData>(`/api/content?${viewQuery(page)}`);
+  const key = pageCacheKey(page);
+  const hit = pageCache.get(key);
+  if (hit) return hit;
+  const d = await api<PageData>(`/api/content?${viewQuery(page)}`);
+  pageCache.set(key, d);
+  if (pageCache.size > 60) {
+    const oldest = pageCache.keys().next().value;
+    if (oldest !== undefined) pageCache.delete(oldest);
+  }
+  return d;
+}
+async function ensureFill() {
+  let guard = 0;
+  while (HAS_MORE && guard++ < 12 && document.documentElement.scrollHeight <= window.innerHeight + 300) {
+    await loadMore();
+  }
 }
 /** 重置到第一页并重渲染(切菜单/搜索/收藏/刷新列表用) */
 async function refreshList() {
@@ -407,8 +434,8 @@ async function refreshList() {
   HAS_MORE = ITEMS.length < TOTAL;
   FAVORITES = new Set(d.favorites ?? []);
   renderGrid();
+  await ensureFill();
 }
-/** 无限滚动:追加下一页(已加载窗口是有序列表的前缀,拖拽 newIndex 语义不变) */
 async function loadMore() {
   if (loadingMore || !HAS_MORE) return;
   loadingMore = true;
@@ -419,6 +446,7 @@ async function loadMore() {
     TOTAL = d.total;
     HAS_MORE = ITEMS.length < TOTAL;
     renderGrid();
+    await ensureFill();
   } finally {
     loadingMore = false;
   }
@@ -426,6 +454,7 @@ async function loadMore() {
 
 // ---------------- 加载内容 ----------------
 async function loadContent() {
+  clearPageCache(); // 任何结构性变更后旧页缓存作废
   if (!activeOrgId) {
     MENUS = [];
     ITEMS = [];
@@ -1267,8 +1296,10 @@ function bindGrid() {
           body: JSON.stringify({ itemId: id, on }),
         });
         // 收藏视图下加/取消收藏会改变卡片列表,重新拉第一页
-        if (favView && !searchQuery.trim())
+        if (favView && !searchQuery.trim()) {
+          clearPageCache();
           refreshList().catch((er) => toast((er as Error).message, true));
+        }
       } catch (err) {
         if (on) FAVORITES.delete(id);
         else FAVORITES.add(id);
