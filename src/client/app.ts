@@ -1765,8 +1765,13 @@ function bindGrid() {
   }
   const grid = $('#card-grid');
   // 搜索/收藏视图下禁用拖拽排序(跨菜单结果排序无意义,且 reorder 依赖 selectedMenuId);
-  // 批量模式下也禁用:长按拖拽会和勾选打架
-  if (isAdmin && grid && !searchQuery.trim() && !favView && !selectMode) {
+  // 批量模式下也禁用:长按拖拽会和勾选打架;
+  // 非叶子菜单(父级视图,混排多个子菜单卡片)与未选菜单(全量视图)同样禁用:
+  // 此时 newIndex 按混排列表计算,而 reorder 只作用于 selectedMenuId 单个菜单,
+  // 拖拽会把子菜单的卡片改挂到父菜单、且插入位置错乱。叶子菜单视图列表与菜单一一对应,照常可拖。
+  const selMenu = selectedMenuId ? findMenu(MENUS, selectedMenuId) : null;
+  const leafView = !!selectedMenuId && !(selMenu?.children?.length);
+  if (isAdmin && grid && !searchQuery.trim() && !favView && !selectMode && leafView) {
     cardSortable = Sortable.create(grid, {
       animation: 150,
       delay: 250,
