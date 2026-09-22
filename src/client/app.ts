@@ -476,7 +476,20 @@ function paintStaleList(): boolean {
   FAVORITES = new Set(stale.favorites);
   PAGE = Math.max(1, Math.ceil(ITEMS.length / PAGE_SIZE));
   renderGrid();
+  animateGridEnterIfNewView();
   return true;
+}
+/** 视图切换时给网格一次 150ms 淡入+上移;同视图的后台校准替换不重复动画,保持秒开体感 */
+let lastViewAnimKey = '';
+function animateGridEnterIfNewView() {
+  const key = listKey();
+  if (key === lastViewAnimKey) return;
+  lastViewAnimKey = key;
+  const grid = $('#media-grid');
+  if (!grid) return;
+  grid.classList.remove('view-enter');
+  void grid.offsetWidth; // 强制回流以重播动画
+  grid.classList.add('view-enter');
 }
 /** 并行拉连续多页(刷新/补页/预载共用):多页同发,免串行往返 */
 async function fetchWindow(from: number, pages: number) {
@@ -556,6 +569,7 @@ async function refreshList() {
   HAS_MORE = ITEMS.length < TOTAL;
   if (w.favorites) FAVORITES = new Set(w.favorites);
   renderGrid();
+  animateGridEnterIfNewView();
   await ensureFill(seq);
   if (seq !== refreshSeq) return;
   writeListCache();

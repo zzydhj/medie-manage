@@ -221,6 +221,11 @@ body {
   gap: 4px;
   padding: 9px 12px;
   min-height: 42px;
+  /* 选中/悬停高亮平滑过渡,避免硬跳 */
+  transition:
+    background-color 0.12s ease,
+    color 0.12s ease,
+    border-left-color 0.12s ease;
   font-size: 14px;
   font-weight: 600;
   color: #374151;
@@ -929,6 +934,30 @@ body {
 .skel-line { height: 10px; margin-top: 8px; border-radius: 5px; }
 @keyframes skel-shimmer {
   to { background-position: -200% 0; }
+}
+/* 视图切换:新内容 150ms 淡入+轻微上移,只动画"进入"保持秒开体感 */
+.view-enter {
+  animation: view-in 150ms ease-out;
+}
+@keyframes view-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .view-enter {
+    animation: none;
+  }
+  .menu-children,
+  .menu-caret,
+  .menu-row {
+    transition: none;
+  }
 }
 /* ===== 关灯式全屏预览(无边缘包裹) ===== */
 .lightbox {
