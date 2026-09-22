@@ -2244,6 +2244,8 @@ async function deleteMenu(id: string) {
 // ---------------- 素材 新增(上传) ----------------
 // 批量上传模式:弹窗改为“逐个上传列表”,保存键变为“完成”(仅关闭)
 let batchMode = false;
+// 弹窗会话序号:重开弹窗(openItemModal)即作废尚在上传的单文件任务,避免跨弹窗残留
+let itemModalSeq = 0;
 
 function openItemModal() {
   if (!selectedMenuId) return toast('请先在左侧选择一个菜单', true);
@@ -2263,6 +2265,13 @@ function openItemModal() {
   save.disabled = true;
   ($('#upload-status') as HTMLElement).textContent = '';
   ($('#file-input') as HTMLInputElement).value = '';
+  // 重置批量面板:后台上传循环以 listEl.dataset.run 认领面板,清空后它们的进度写入自动失效,
+  // 既避免旧行残留,也避免旧循环误写新面板的行;itemModalSeq 作废重开时仍在上传的单文件任务
+  ($('#batch-panel') as HTMLElement).classList.add('hidden');
+  const batchList = $('#batch-list') as HTMLElement;
+  batchList.innerHTML = '';
+  delete batchList.dataset.run;
+  itemModalSeq++;
   openModal('item-modal');
 }
 
@@ -2389,8 +2398,13 @@ async function generateImageThumb(file: File): Promise<Blob | null> {
 function isHeicName(name: string): boolean {
   return /\.(heic|heif)$/i.test(name || '');
 }
-/** HEIC → JPEG(动态 import heic2any:不传 HEIC 就不下载这个库);上传前转码,入库即 JPEG */
+/** HEIC → JPEG:先试 heic2any(体积小,覆盖老设备);失败再兜底 libheif-js(见 libheifToJpeg) */
 async function heicToJpeg(file: File): Promise<Blob | null> {
+  const first = await heic2anyJpeg(file);
+  return first ?? (await libheifToJpeg(file));
+}
+/** 首选:heic2any(动态 import:不传 HEIC 就不下载这个库) */
+async function heic2anyJpeg(file: File): Promise<Blob | null> {
   try {
     const heic2any = (await import('heic2any')).default as (
       o: any,
@@ -2398,6 +2412,43 @@ async function heicToJpeg(file: File): Promise<Blob | null> {
     const out = await heic2any({ blob: file, toType: 'image/jpeg', quality: 0.92 });
     const b = Array.isArray(out) ? out[0] : out;
     return b || null;
+  } catch {
+    return null;
+  }
+}
+/** 兜底:libheif-js wasm 预打包(对应较新 libheif,能解 heic2any 那套老 libheif 解不了的新 iPhone 10-bit/HDR HEIC)。
+ *  wasm 以 base64 内联,动态 import 按需加载:只有 heic2any 转失败才会下载 */
+async function libheifToJpeg(file: File): Promise<Blob | null> {
+  try {
+    // 包装层在不同环境可能直接给模块对象或 Promise,await 统一归一
+    const libheif = await (await import('libheif-js/wasm-bundle')).default;
+    const image = new libheif.HeifDecoder().decode(new Uint8Array(await file.arrayBuffer()))[0];
+    if (!image) return null;
+    const width = image.get_width();
+    const height = image.get_height();
+    if (!width || !height) return null;
+    const raw = document.createElement('canvas');
+    raw.width = width;
+    raw.height = height;
+    const rctx = raw.getContext('2d');
+    if (!rctx) return null;
+    const data = rctx.createImageData(width, height);
+    await new Promise<void>((resolve, reject) => {
+      image.display(data, (d) => (d ? resolve() : reject(new Error('HEIF display 失败'))));
+    });
+    rctx.putImageData(data, 0, 0);
+    // JPEG 无 alpha 通道:叠到白底再导出,避免透明区变黑块
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return null;
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, width, height);
+    ctx.drawImage(raw, 0, 0);
+    return await new Promise<Blob | null>((resolve) => {
+      canvas.toBlob((b) => resolve(b), 'image/jpeg', 0.92);
+    });
   } catch {
     return null;
   }
@@ -2525,6 +2576,7 @@ async function handleFileChosen(file: File) {
   if (!isSupportedFile(file)) {
     return toast('仅支持图片、视频、PDF、Word、Excel、HEIC', true);
   }
+  const seq = itemModalSeq; // 弹窗会话:上传途中弹窗被重开则结果作废
 
   ($('#item-save') as HTMLButtonElement).disabled = true;
   try {
@@ -2562,6 +2614,7 @@ async function handleFileChosen(file: File) {
         thumbUrl = thumb.url;
       }
     }
+    if (seq !== itemModalSeq) return; // 用户中途关弹窗又重开(=放弃):不把这份上传残留进新弹窗
     pendingUpload = {
       type,
       fileKey: main.key,
@@ -2629,10 +2682,38 @@ async function saveItem() {
  * 去重:同一公司内「文件名 + 大小」已存在即跳过——相机常生成 IMG_0001.jpg 这类同名文件,
  *      只比文件名会误跳,故必须连字节大小一起判断;同一批里选到两次也只传一次。
  */
-async function handleBatchChosen(files: File[]) {
-  if (!selectedMenuId) return toast('请先在左侧选择一个菜单', true);
-  batchMode = true;
+// 批量上传任务队列:连续选多批时按选择顺序串行执行,目标菜单在选择时锁定(targetMenuId)。
+// 两个动机:1) 关弹窗后的后台循环不能被切菜单串改归属;2) 并发循环会争抢同一份弹窗内
+// 批量 UI(#batch-list/#upload-status/#item-save),行误写、进度互盖,必须串行。排队批次在选择时提示,前一批完成后自动开始。
+let batchQueue: Promise<void> = Promise.resolve();
+let batchRunning = false;
+let batchRunSeq = 0;
 
+function handleBatchChosen(files: File[]) {
+  if (!selectedMenuId) return toast('请先在左侧选择一个菜单', true);
+  const targetMenuId = selectedMenuId; // 选择时锁定:之后切菜单不会串改这批的归属
+  const queued = batchRunning;
+  if (queued) {
+    const label = findMenu(MENUS, targetMenuId)?.name ?? '';
+    toast(`上一批还在上传,这 ${files.length} 个文件已排队,完成后自动传到「${label}」`);
+  }
+  batchQueue = batchQueue.then(() =>
+    runBatchUpload(files, targetMenuId, queued).catch((e) => toast((e as Error).message || '上传失败', true)),
+  );
+}
+
+/** 串行执行单元:异常也保证 batchRunning 复位,队列不被单个任务失败弄死 */
+async function runBatchUpload(files: File[], targetMenuId: string, queued: boolean) {
+  batchRunning = true;
+  try {
+    await batchUploadTask(files, targetMenuId, queued);
+  } finally {
+    batchRunning = false;
+  }
+}
+
+async function batchUploadTask(files: File[], targetMenuId: string, queued: boolean) {
+  const runId = ++batchRunSeq;
   const panel = $('#batch-panel') as HTMLElement;
   const listEl = $('#batch-list') as HTMLElement;
   const status = $('#upload-status') as HTMLElement;
@@ -2640,13 +2721,24 @@ async function handleBatchChosen(files: File[]) {
   const saveBtn = $('#item-save') as HTMLButtonElement;
   const titleField = ($('#item-title') as HTMLElement | null)?.closest('.field') as HTMLElement | null;
 
-  // 切到批量 UI:藏起单文件预览与标题输入,展开批量列表
-  preview.classList.add('hidden');
-  preview.innerHTML = '';
-  titleField?.classList.add('hidden');
-  panel.classList.remove('hidden');
-  saveBtn.disabled = true;
-  saveBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> 上传中…';
+  // 排队批次只在批量面板还开着(用户正看着上一批结果)时接管 UI;弹窗已关或重开成单文件流程时,
+  // 后台静默跑、完成用 toast 汇报,避免破坏当前正在用的界面。
+  const ownsUiFromStart = !queued || !panel.classList.contains('hidden');
+  if (ownsUiFromStart) {
+    batchMode = true;
+    // 切到批量 UI:藏起单文件预览与标题输入,展开批量列表
+    preview.classList.add('hidden');
+    preview.innerHTML = '';
+    titleField?.classList.add('hidden');
+    panel.classList.remove('hidden');
+    saveBtn.disabled = true;
+    saveBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> 上传中…';
+  }
+  // 进度写入权限:面板仍挂着本 run 的行才写;openItemModal 清掉 dataset.run 后后台循环自动空操作
+  const ownsUi = () => listEl.dataset.run === String(runId);
+  const say = (t: string) => {
+    if (ownsUi()) status.textContent = t;
+  };
 
   // 全公司已存在的「文件名|大小」集合
   const seen = new Set<string>(
@@ -2693,8 +2785,10 @@ async function handleBatchChosen(files: File[]) {
       </div>`,
     )
     .join('');
+  if (ownsUiFromStart) listEl.dataset.run = String(runId);
 
   const paint = (r: Row, i: number, pct?: number) => {
+    if (!ownsUi()) return; // 面板已被新 run 接管 / 被重开弹窗清空:本 run 的写入作废
     const rowEl = listEl.querySelector(`[data-idx="${i}"]`) as HTMLElement | null;
     if (!rowEl) return;
     const el = rowEl.querySelector('.batch-row-state') as HTMLElement | null;
@@ -2714,15 +2808,15 @@ async function handleBatchChosen(files: File[]) {
     if (r.state !== 'pending') continue;
     r.state = 'uploading';
     paint(r, i);
-    status.textContent = `正在上传 ${i + 1}/${total}:${r.file.name}`;
+    say(`正在上传 ${i + 1}/${total}:${r.file.name}`);
     try {
       // 苹果 HEIC:上传前先转成 JPG
       let work = await convertHeicIfNeeded(r.file, (s) => {
-        status.textContent = `${i + 1}/${total}:${s}`;
+        say(`${i + 1}/${total}:${s}`);
       });
       // 相机/手机原图太大:视觉基本无损地压一道再传
       const compressed = await compressImageIfNeeded(work, (s) => {
-        status.textContent = `${i + 1}/${total}:${s}`;
+        say(`${i + 1}/${total}:${s}`);
       });
       work = compressed.file;
       // 服务端全量判重(前端只持有已加载页):重复直接跳过,不浪费上传流量
@@ -2755,7 +2849,7 @@ async function handleBatchChosen(files: File[]) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          menuId: selectedMenuId,
+          menuId: targetMenuId,
           type,
           title: work.name.replace(/\.[^.]+$/, ''),
           fileKey: main.key,
@@ -2784,9 +2878,11 @@ async function handleBatchChosen(files: File[]) {
   if (unsupported) parts.push(`忽略不支持 ${unsupported} 个`);
   if (errCount) parts.push(`失败 ${errCount} 个`);
   const summary = parts.length ? parts.join(',') : '没有可上传的文件';
-  status.textContent = `完成:${summary}`;
-  saveBtn.disabled = false;
-  saveBtn.innerHTML = '完成';
+  if (ownsUi()) {
+    status.textContent = `完成:${summary}`;
+    saveBtn.disabled = false;
+    saveBtn.innerHTML = '完成';
+  }
   toast(`批量上传完成:${summary}`, ok === 0 && errCount + unsupported > 0);
   await loadContent();
 }

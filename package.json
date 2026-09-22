@@ -18,6 +18,7 @@
     "@astrojs/cloudflare": "^12.1.0",
     "astro": "^5.1.0",
     "heic2any": "^0.0.4",
+    "libheif-js": "^1.23.2",
     "mammoth": "^1.12.3",
     "sortablejs": "^1.15.6",
     "xlsx": "^0.18.5"

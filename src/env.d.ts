@@ -39,3 +39,18 @@ declare module 'mammoth/mammoth.browser.js' {
   };
   export default mammoth;
 }
+
+// libheif-js wasm 预打包(CJS 包装,无官方类型):HEIC 转码兜底解码,动态 import 按需加载
+declare module 'libheif-js/wasm-bundle' {
+  export interface LibheifImage {
+    get_width(): number;
+    get_height(): number;
+    display(imageData: ImageData, callback: (data: ImageData | null) => void): void;
+  }
+  export interface LibheifModule {
+    HeifDecoder: new () => { decode(data: Uint8Array): LibheifImage[] };
+  }
+  // CJS 包装调用后在不同环境可能是模块对象或 Promise,调用处 await 统一归一
+  const libheif: LibheifModule | Promise<LibheifModule>;
+  export default libheif;
+}
