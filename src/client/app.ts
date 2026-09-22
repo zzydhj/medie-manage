@@ -2195,9 +2195,19 @@ async function convertHeicIfNeeded(file: File, onStatus?: (s: string) => void): 
   if (!jpeg) throw new Error('HEIC 转码失败:请在手机上导出为 JPEG 后重传');
   return new File([jpeg], file.name.replace(/\.(heic|heif)$/i, '.jpg'), { type: 'image/jpeg' });
 }
-/** 相机/手机原图常 5-6MB:原尺寸 quality 0.92 重编码,视觉基本无损;省不到 10% 就保留原字节 */
-async function compressJpegIfNeeded(file: File, onStatus?: (s: string) => void): Promise<File> {
-  if (!/\.jpe?g$/i.test(file.name) || file.size < 800 * 1024) return file;
+/** 各格式压缩目标:jpg/bmp→JPEG;png/webp→WebP(保留透明);svg(矢量)/gif(动画)不碰 */
+const COMPRESS_TARGET: Record<string, { mime: string; q: number; ext: string }> = {
+  '.jpg': { mime: 'image/jpeg', q: 0.92, ext: '.jpg' },
+  '.jpeg': { mime: 'image/jpeg', q: 0.92, ext: '.jpg' },
+  '.bmp': { mime: 'image/jpeg', q: 0.92, ext: '.jpg' },
+  '.png': { mime: 'image/webp', q: 0.95, ext: '.webp' },
+  '.webp': { mime: 'image/webp', q: 0.95, ext: '.webp' },
+};
+/** 相机/手机原图常 5-6MB:原尺寸重编码,视觉基本无损;省不到 10% 就保留原字节 */
+async function compressImageIfNeeded(file: File, onStatus?: (s: string) => void): Promise<File> {
+  const ext = (file.name.match(/\.[^.]+$/) || [''])[0].toLowerCase();
+  const target = COMPRESS_TARGET[ext];
+  if (!target || file.size < 800 * 1024) return file;
   const url = URL.createObjectURL(file);
   try {
     onStatus?.('大图压缩中…(画质基本无损)');
@@ -2209,11 +2219,18 @@ async function compressJpegIfNeeded(file: File, onStatus?: (s: string) => void):
     canvas.height = img.naturalHeight;
     const ctx = canvas.getContext('2d');
     if (!ctx) return file;
+    // JPEG 无 alpha 通道:先铺白底,避免透明区域变黑块
+    if (target.mime === 'image/jpeg') {
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
     ctx.drawImage(img, 0, 0);
-    const blob = await new Promise<Blob | null>((r) => canvas.toBlob(r, 'image/jpeg', 0.92));
+    const blob = await new Promise<Blob | null>((r) => canvas.toBlob(r, target.mime, target.q));
+    // 浏览器不支持该编码(如旧 Safari 编 webp)会回退 png:类型不符即放弃
+    if (!blob || blob.type !== target.mime) return file;
     // 压缩收益不足或反而变大:保留原文件,不做无谓重编码
-    if (!blob || blob.size >= file.size * 0.9) return file;
-    return new File([blob], file.name, { type: 'image/jpeg' });
+    if (blob.size >= file.size * 0.9) return file;
+    return new File([blob], file.name.replace(/\.[^.]+$/, target.ext), { type: target.mime });
   } catch {
     return file;
   } finally {
@@ -2285,7 +2302,7 @@ async function handleFileChosen(file: File) {
     // 苹果 HEIC:上传前先转成 JPG,入库即全平台可看的 JPEG
     let work = await convertHeicIfNeeded(file, (s) => (status.textContent = s));
     // 相机/手机原图太大:视觉基本无损地压一道再传
-    work = await compressJpegIfNeeded(work, (s) => (status.textContent = s));
+    work = await compressImageIfNeeded(work, (s) => (status.textContent = s));
     const main = await uploadFile(work, 'main', (loaded, total) => {
       status.textContent = `上传中 ${Math.round((loaded / total) * 100)}%(${fmtMb(loaded)}/${fmtMb(total)})`;
     });
@@ -2470,7 +2487,7 @@ async function handleBatchChosen(files: File[]) {
         status.textContent = `${i + 1}/${total}:${s}`;
       });
       // 相机/手机原图太大:视觉基本无损地压一道再传
-      work = await compressJpegIfNeeded(work, (s) => {
+      work = await compressImageIfNeeded(work, (s) => {
         status.textContent = `${i + 1}/${total}:${s}`;
       });
       // 服务端全量判重(前端只持有已加载页):重复直接跳过,不浪费上传流量
