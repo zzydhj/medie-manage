@@ -503,9 +503,16 @@ function appendWindow(w: { items: ItemDTO[]; total: number; pages: number }) {
   HAS_MORE = ITEMS.length < TOTAL;
   renderGrid();
 }
-async function ensureFill() {
+/** 切换序列号:快速连点菜单时只允许最后一次点击的结果落地,过期响应/补页全部丢弃 */
+let refreshSeq = 0;
+async function ensureFill(seq = refreshSeq) {
   let guard = 0;
-  while (HAS_MORE && guard++ < 4 && document.documentElement.scrollHeight <= window.innerHeight + 300) {
+  while (
+    HAS_MORE &&
+    guard++ < 4 &&
+    seq === refreshSeq &&
+    document.documentElement.scrollHeight <= window.innerHeight + 300
+  ) {
     appendWindow(await fetchWindow(PAGE + 1, 3));
   }
 }
@@ -531,6 +538,7 @@ function startPreload() {
 }
 /** 重置到第一页并重渲染(切菜单/搜索/收藏/刷新列表用) */
 async function refreshList() {
+  const seq = ++refreshSeq; // 作废之前所有在飞的切换
   preloadSeq++; // 取消上一轮后台预载
   deepSeq++; // 取消上一轮深度预载
   const painted = paintStaleList(); // 上次窗口立即秒开
@@ -541,24 +549,29 @@ async function refreshList() {
   // 有旧窗口时并行补到同等规模,替换一次到位;没有则只拉第一页
   const want = painted ? Math.min(10, Math.max(1, Math.ceil(ITEMS.length / PAGE_SIZE))) : 1;
   const w = await fetchWindow(1, want);
+  if (seq !== refreshSeq) return; // 用户又切走了:这份结果作废,避免"点A显示B"
   PAGE = w.pages;
   ITEMS = w.items;
   TOTAL = w.total;
   HAS_MORE = ITEMS.length < TOTAL;
   if (w.favorites) FAVORITES = new Set(w.favorites);
   renderGrid();
-  await ensureFill();
+  await ensureFill(seq);
+  if (seq !== refreshSeq) return;
   writeListCache();
   startPreload();
   scheduleDeepPrefetch();
 }
 async function loadMore() {
   if (loadingMore || !HAS_MORE) return;
+  const seq = refreshSeq;
   loadingMore = true;
   updateGridFooter();
   try {
-    appendWindow(await fetchWindow(PAGE + 1, 1));
-    await ensureFill();
+    const w = await fetchWindow(PAGE + 1, 1);
+    if (seq !== refreshSeq) return; // 切换已发生:不要把旧视图的页混进新视图
+    appendWindow(w);
+    await ensureFill(seq);
   } finally {
     loadingMore = false;
     updateGridFooter();
