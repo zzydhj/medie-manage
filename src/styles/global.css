@@ -666,6 +666,13 @@ body {
 .pop-item.danger:hover {
   background: #fee2e2;
 }
+.grid-footer {
+  grid-column: 1 / -1;
+  text-align: center;
+  color: #94a3b8;
+  font-size: 12px;
+  padding: 14px 0 4px;
+}
 .add-card {
   border: 2px dashed #93c5fd;
   background: #eff6ff;

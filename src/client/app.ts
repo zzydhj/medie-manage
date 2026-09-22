@@ -39,6 +39,14 @@ let ME: Me | null = null;
 let activeOrgId: string | null = null;
 let MENUS: MenuNode[] = [];
 let ITEMS: ItemDTO[] = [];
+// 分页:ITEMS 为"已加载窗口";TOTAL/HAS_MORE 驱动无限滚动;COUNTS/FAV_COUNT 为服务端聚合计数
+let PAGE = 1;
+const PAGE_SIZE = 36;
+let TOTAL = 0;
+let HAS_MORE = false;
+let loadingMore = false;
+let COUNTS: Record<string, number> = {};
+let FAV_COUNT = 0;
 let selectedMenuId: string | null = null;
 // 搜索关键词:空=按菜单浏览;非空=全公司范围按标题/文件名过滤
 let searchQuery = '';
@@ -184,6 +192,16 @@ async function init() {
   initSearch();
   initBatch();
   initLightbox();
+  // 无限滚动:接近底部自动加载下一页
+  window.addEventListener(
+    'scroll',
+    () => {
+      if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 500) {
+        loadMore();
+      }
+    },
+    { passive: true },
+  );
 
   await loadContent();
 }
@@ -364,19 +382,66 @@ function restoreView(): SavedView | null {
   }
 }
 
+// ---------------- 分页加载 ----------------
+interface PageData {
+  items: ItemDTO[];
+  total: number;
+  favorites?: string[];
+}
+function viewQuery(page: number): string {
+  const p = new URLSearchParams({ page: String(page), pageSize: String(PAGE_SIZE) });
+  if (searchQuery.trim()) p.set('q', searchQuery.trim());
+  else if (favView) p.set('fav', '1');
+  else if (selectedMenuId) p.set('menuId', selectedMenuId);
+  return p.toString();
+}
+async function fetchPage(page: number): Promise<PageData> {
+  return api<PageData>(`/api/content?${viewQuery(page)}`);
+}
+/** 重置到第一页并重渲染(切菜单/搜索/收藏/刷新列表用) */
+async function refreshList() {
+  PAGE = 1;
+  const d = await fetchPage(1);
+  ITEMS = d.items;
+  TOTAL = d.total;
+  HAS_MORE = ITEMS.length < TOTAL;
+  FAVORITES = new Set(d.favorites ?? []);
+  renderGrid();
+}
+/** 无限滚动:追加下一页(已加载窗口是有序列表的前缀,拖拽 newIndex 语义不变) */
+async function loadMore() {
+  if (loadingMore || !HAS_MORE) return;
+  loadingMore = true;
+  try {
+    const d = await fetchPage(PAGE + 1);
+    PAGE += 1;
+    ITEMS = ITEMS.concat(d.items);
+    TOTAL = d.total;
+    HAS_MORE = ITEMS.length < TOTAL;
+    renderGrid();
+  } finally {
+    loadingMore = false;
+  }
+}
+
 // ---------------- 加载内容 ----------------
 async function loadContent() {
   if (!activeOrgId) {
     MENUS = [];
     ITEMS = [];
+    TOTAL = 0;
+    HAS_MORE = false;
     renderSidebar();
     renderGrid();
     return;
   }
-  const data = await api<{ menus: MenuNode[]; items: ItemDTO[]; favorites?: string[] }>('/api/content');
-  MENUS = data.menus;
-  ITEMS = data.items;
-  FAVORITES = new Set(data.favorites ?? []);
+  // 先拉树+计数(轻量),据此恢复/决定视图,再按视图拉第一页素材
+  const meta = await api<{ menus: MenuNode[]; counts: Record<string, number>; favCount: number }>(
+    '/api/content?meta=1',
+  );
+  MENUS = meta.menus;
+  COUNTS = meta.counts ?? {};
+  FAV_COUNT = meta.favCount ?? 0;
 
   // 视图恢复:刷新后回到上次打开的菜单/收藏;无记录或已失效(菜单被删/换公司)则用默认
   // (手机端首屏=收藏,电脑端=第一个叶子菜单)
@@ -395,8 +460,8 @@ async function loadContent() {
     selectedMenuId = firstLeafId(MENUS);
   }
   saveView(); // 把当前生效视图落盘,供下次刷新恢复
+  await refreshList();
   renderSidebar();
-  renderGrid();
   if (isAdmin) $('#add-root-menu')?.classList.remove('hidden');
 }
 
@@ -425,23 +490,12 @@ function menuPath(nodes: MenuNode[], id: string, trail: string[] = []): string[]
   }
   return [];
 }
-/** 收集某菜单及其所有子孙菜单的 id(点一级菜单时连带统计/显示子菜单内容) */
-function menuSubtreeIds(menuId: string): Set<string> {
-  const out = new Set<string>();
-  const walk = (n: MenuNode) => {
-    out.add(n.id);
-    n.children.forEach(walk);
-  };
-  const root = findMenu(MENUS, menuId);
-  if (root) walk(root);
-  else out.add(menuId);
-  return out;
-}
+// 侧栏计数直接读服务端聚合好的子树总数/收藏总数(分页后前端不再持有全量)
 function countItemsIn(menuId: string): number {
-  return ITEMS.filter((i) => menuSubtreeIds(menuId).has(i.menu_id)).length;
+  return COUNTS[menuId] ?? 0;
 }
 function countFavItems(): number {
-  return ITEMS.filter((i) => FAVORITES.has(i.id)).length;
+  return FAV_COUNT;
 }
 // 收藏虚拟节点:固定菜单树最顶,跨菜单展示个人收藏(非真菜单:无子级/不可拖/不进菜单管理)
 function renderFavRow(): string {
@@ -531,7 +585,7 @@ function bindMenuTree() {
         resetSearch();
         document.querySelectorAll('.menu-row.active').forEach((r) => r.classList.remove('active'));
         row.classList.add('active');
-        renderGrid();
+        refreshList().catch((er) => toast((er as Error).message, true));
         // 移动端选中后收起侧栏
         if (window.innerWidth < 1024) toggleSidebarDrawer(false);
         return;
@@ -561,7 +615,7 @@ function bindMenuTree() {
       resetSearch();
       document.querySelectorAll('.menu-row.active').forEach((r) => r.classList.remove('active'));
       row.classList.add('active');
-      renderGrid();
+      refreshList().catch((er) => toast((er as Error).message, true));
       // 移动端:点叶子菜单才收起侧栏;点有子级的菜单保持展开,方便继续看手风琴/选子级
       if (window.innerWidth < 1024 && !hasKids) toggleSidebarDrawer(false);
     });
@@ -625,8 +679,7 @@ function renderGrid() {
     grid.innerHTML = `<div class="empty-hint">请先在上方选择或创建一个公司</div>`;
     return;
   }
-  const q = searchQuery.trim().toLowerCase();
-  const searching = q.length > 0;
+  const searching = searchQuery.trim().length > 0;
 
   if (!searching && !favView && !selectedMenuId) {
     grid.innerHTML = `<div class="empty-hint">${
@@ -635,20 +688,8 @@ function renderGrid() {
     return;
   }
 
-  const items = (
-    searching
-      ? // 搜索模式:跨菜单匹配标题或文件名
-        ITEMS.filter(
-          (i) =>
-            (i.title || '').toLowerCase().includes(q) ||
-            (i.filename || '').toLowerCase().includes(q),
-        )
-      : favView
-        ? // 收藏视图:跨菜单,仅展示我加星的素材
-          ITEMS.filter((i) => FAVORITES.has(i.id))
-        : // 菜单视图:含该菜单及其所有子菜单的素材(点一级菜单看全部下级内容)
-          ITEMS.filter((i) => menuSubtreeIds(selectedMenuId!).has(i.menu_id))
-  ).sort((a, b) => a.sort_order - b.sort_order);
+  // 服务端已按视图(搜索/收藏/菜单子树)过滤+排序+分页;前端只渲染已加载窗口
+  const items = ITEMS;
 
   // 全部类型均可在灯箱内预览:图片/视频/PDF 原生渲染,Word/Excel 由客户端解析渲染
   const previewable = items.filter((it) => TYPE_META[it.type].preview);
@@ -753,7 +794,12 @@ function renderGrid() {
             ? ''
             : `<div class="empty-hint">该菜单下暂无素材</div>`
       : '';
-  grid.innerHTML = cards + addTile + emptyHint;
+  const footer = items.length
+    ? HAS_MORE
+      ? `<div class="grid-footer"><i class="fa-solid fa-ellipsis"></i> 滚动加载更多…</div>`
+      : `<div class="grid-footer">已加载全部 ${TOTAL} 个</div>`
+    : '';
+  grid.innerHTML = cards + addTile + emptyHint + footer;
 
   bindGrid();
   if (selectMode) updateBatchBar();
@@ -1203,6 +1249,7 @@ function bindGrid() {
       // 乐观更新:先改本地状态与样式,失败再回滚
       if (on) FAVORITES.add(id);
       else FAVORITES.delete(id);
+      FAV_COUNT += on ? 1 : -1;
       paint(on);
       updateFavCount();
       try {
@@ -1211,11 +1258,13 @@ function bindGrid() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ itemId: id, on }),
         });
-        // 收藏视图下加/取消收藏会改变卡片列表,重渲染
-        if (favView && !searchQuery.trim()) renderGrid();
+        // 收藏视图下加/取消收藏会改变卡片列表,重新拉第一页
+        if (favView && !searchQuery.trim())
+          refreshList().catch((er) => toast((er as Error).message, true));
       } catch (err) {
         if (on) FAVORITES.delete(id);
         else FAVORITES.add(id);
+        FAV_COUNT += on ? -1 : 1;
         paint(!on);
         updateFavCount();
         toast((err as Error).message, true);
@@ -1594,13 +1643,13 @@ function initSearch() {
   let timer: number | undefined;
   const apply = () => {
     searchQuery = input.value;
-    renderGrid();
     syncMobileNav();
+    refreshList().catch((e) => toast((e as Error).message, true)); // 服务端搜索:拉第一页
   };
   const clear = () => {
     window.clearTimeout(timer);
     resetSearch();
-    renderGrid();
+    refreshList().catch((e) => toast((e as Error).message, true));
   };
   input.addEventListener('input', () => {
     // 未聚焦时收到值变化 = 浏览器自动填充/表单恢复(不是用户输入):清掉,不当作搜索词
@@ -1611,9 +1660,9 @@ function initSearch() {
       return;
     }
     clearBtn?.classList.toggle('hidden', input.value.length === 0);
-    // 轻微防抖,避免每敲一个字都重渲染整片卡片
+    // 防抖后走服务端搜索,避免每敲一个字都请求
     window.clearTimeout(timer);
-    timer = window.setTimeout(apply, 150);
+    timer = window.setTimeout(apply, 300);
   });
   clearBtn?.addEventListener('click', () => {
     clear();
@@ -1817,6 +1866,7 @@ async function generateImageThumb(file: File): Promise<Blob | null> {
 
 /** 给无缩略图的老图片补生成:拉原图 → 本地生成 → 上传 → 回写卡片。管理员一次性操作 */
 async function backfillThumbs(): Promise<void> {
+  while (HAS_MORE) await loadMore(); // 分页后先加载全量,再找出缺缩略图的
   const targets = ITEMS.filter((i) => i.type === 'image' && !i.thumb_url);
   if (!targets.length) return toast('当前公司的图片都已有缩略图');
   let ok = 0;
@@ -2044,6 +2094,17 @@ async function handleBatchChosen(files: File[]) {
     paint(r, i);
     status.textContent = `正在上传 ${i + 1}/${total}:${r.file.name}`;
     try {
+      // 服务端全量判重(前端只持有已加载页):重复直接跳过,不浪费上传流量
+      const dup = await api<{ dup: boolean }>(
+        `/api/items?filename=${encodeURIComponent(r.file.name)}&size=${r.file.size}`,
+      );
+      if (dup.dup) {
+        r.state = 'skip';
+        r.msg = '已存在';
+        paint(r, i);
+        skipped++;
+        continue;
+      }
       const main = await uploadFile(r.file, 'main');
       const type = main.type as ItemType; // 服务端权威判定
       let thumbKey: string | null = null;
