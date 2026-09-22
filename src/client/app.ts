@@ -197,7 +197,7 @@ async function init() {
     'scroll',
     () => {
       if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 800) {
-        loadMore();
+        loadMore().catch((e) => toast((e as Error).message, true));
       }
     },
     { passive: true },
@@ -422,11 +422,30 @@ async function fetchPage(page: number): Promise<PageData> {
 async function ensureFill() {
   let guard = 0;
   while (HAS_MORE && guard++ < 12 && document.documentElement.scrollHeight <= window.innerHeight + 300) {
-    await loadMore();
+    await appendNext();
   }
+}
+/** 后台静默预载剩余页:首屏填满后把后面内容全部拉进已加载窗口,滚动零等待、不漏内容 */
+let preloadSeq = 0;
+function startPreload() {
+  const seq = ++preloadSeq;
+  (async () => {
+    try {
+      let pages = 0;
+      while (HAS_MORE && pages < 10 && seq === preloadSeq) {
+        await appendNext();
+        pages++;
+        await new Promise((r) => setTimeout(r, 0)); // 让出主线程,避免长任务卡交互
+      }
+    } catch {
+      // 静默失败不骚扰:无限滚动仍可重试
+    }
+    if (seq === preloadSeq) updateGridFooter();
+  })();
 }
 /** 重置到第一页并重渲染(切菜单/搜索/收藏/刷新列表用) */
 async function refreshList() {
+  preloadSeq++; // 取消上一轮后台预载
   PAGE = 1;
   // 无缓存的切换:先铺骨架屏,视觉上立即有响应
   if (!pageCache.has(pageCacheKey(1))) renderSkeleton();
@@ -437,18 +456,23 @@ async function refreshList() {
   FAVORITES = new Set(d.favorites ?? []);
   renderGrid();
   await ensureFill();
+  startPreload();
+}
+/** 追加下一页到已加载窗口(无守卫核心,供 ensureFill/预载/loadMore 共用) */
+async function appendNext() {
+  const d = await fetchPage(PAGE + 1);
+  PAGE += 1;
+  ITEMS = ITEMS.concat(d.items);
+  TOTAL = d.total;
+  HAS_MORE = ITEMS.length < TOTAL;
+  renderGrid();
 }
 async function loadMore() {
   if (loadingMore || !HAS_MORE) return;
   loadingMore = true;
   updateGridFooter();
   try {
-    const d = await fetchPage(PAGE + 1);
-    PAGE += 1;
-    ITEMS = ITEMS.concat(d.items);
-    TOTAL = d.total;
-    HAS_MORE = ITEMS.length < TOTAL;
-    renderGrid();
+    await appendNext();
     await ensureFill();
   } finally {
     loadingMore = false;
@@ -529,7 +553,18 @@ async function loadContent() {
     renderGrid();
     return;
   }
-  // 先拉树+计数(轻量),据此恢复/决定视图,再按视图拉第一页素材
+  renderSkeleton(); // 刷新/重载立即铺骨架屏,视觉不等网络
+  // 视图恢复纯读 localStorage:先定视图,让 meta 与第一页并行拉,省一次串行往返
+  const saved = restoreView();
+  const savedUsable = !!(saved && (saved.fav || saved.menuId));
+  if (saved?.fav) {
+    favView = true;
+    selectedMenuId = null;
+  } else if (saved?.menuId) {
+    favView = false;
+    selectedMenuId = saved.menuId;
+  }
+  const pagePromise = savedUsable ? fetchPage(1).catch(() => null) : null;
   const meta = await api<{ menus: MenuNode[]; counts: Record<string, number>; favCount: number }>(
     '/api/content?meta=1',
   );
@@ -537,9 +572,7 @@ async function loadContent() {
   COUNTS = meta.counts ?? {};
   FAV_COUNT = meta.favCount ?? 0;
 
-  // 视图恢复:刷新后回到上次打开的菜单/收藏;无记录或已失效(菜单被删/换公司)则用默认
-  // (手机端首屏=收藏,电脑端=第一个叶子菜单)
-  const saved = restoreView();
+  // 校验视图:无记录或已失效(菜单被删/换公司)则用默认(手机端首屏=收藏,电脑端=第一个叶子菜单)
   if (saved?.fav) {
     favView = true;
     selectedMenuId = null;
@@ -555,7 +588,22 @@ async function loadContent() {
   }
   saveView(); // 把当前生效视图落盘,供下次刷新恢复
   renderSidebar(); // 树先出来:新建/改名菜单不必等素材页往返
-  await refreshList();
+  const page = pagePromise ? await pagePromise : null;
+  // 并行拉的第一页须与最终视图一致(菜单被删/换公司时丢弃重拉)
+  const pageMatches =
+    !!page && ((favView && !!saved?.fav) || (!favView && selectedMenuId === saved?.menuId));
+  if (page && pageMatches) {
+    PAGE = 1;
+    ITEMS = page.items;
+    TOTAL = page.total;
+    HAS_MORE = ITEMS.length < TOTAL;
+    FAVORITES = new Set(page.favorites ?? []);
+    renderGrid();
+    await ensureFill();
+    startPreload();
+  } else {
+    await refreshList();
+  }
   if (isAdmin) $('#add-root-menu')?.classList.remove('hidden');
   schedulePrefetch(); // 首屏稳定后后台预取各菜单第一页,让后续切换命中缓存
 }
