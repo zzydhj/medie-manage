@@ -2195,6 +2195,31 @@ async function convertHeicIfNeeded(file: File, onStatus?: (s: string) => void): 
   if (!jpeg) throw new Error('HEIC 转码失败:请在手机上导出为 JPEG 后重传');
   return new File([jpeg], file.name.replace(/\.(heic|heif)$/i, '.jpg'), { type: 'image/jpeg' });
 }
+/** 相机/手机原图常 5-6MB:原尺寸 quality 0.92 重编码,视觉基本无损;省不到 10% 就保留原字节 */
+async function compressJpegIfNeeded(file: File, onStatus?: (s: string) => void): Promise<File> {
+  if (!/\.jpe?g$/i.test(file.name) || file.size < 800 * 1024) return file;
+  const url = URL.createObjectURL(file);
+  try {
+    onStatus?.('大图压缩中…(画质基本无损)');
+    const img = new Image();
+    img.src = url;
+    await img.decode(); // 走 <img> 解码:EXIF 旋转会被正确烘焙进像素
+    const canvas = document.createElement('canvas');
+    canvas.width = img.naturalWidth;
+    canvas.height = img.naturalHeight;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return file;
+    ctx.drawImage(img, 0, 0);
+    const blob = await new Promise<Blob | null>((r) => canvas.toBlob(r, 'image/jpeg', 0.92));
+    // 压缩收益不足或反而变大:保留原文件,不做无谓重编码
+    if (!blob || blob.size >= file.size * 0.9) return file;
+    return new File([blob], file.name, { type: 'image/jpeg' });
+  } catch {
+    return file;
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
 
 /** 给无缩略图的老图片补生成:拉原图 → 本地生成 → 上传 → 回写卡片。管理员一次性操作 */
 async function backfillThumbs(): Promise<void> {
@@ -2258,7 +2283,9 @@ async function handleFileChosen(file: File) {
   ($('#item-save') as HTMLButtonElement).disabled = true;
   try {
     // 苹果 HEIC:上传前先转成 JPG,入库即全平台可看的 JPEG
-    const work = await convertHeicIfNeeded(file, (s) => (status.textContent = s));
+    let work = await convertHeicIfNeeded(file, (s) => (status.textContent = s));
+    // 相机/手机原图太大:视觉基本无损地压一道再传
+    work = await compressJpegIfNeeded(work, (s) => (status.textContent = s));
     const main = await uploadFile(work, 'main', (loaded, total) => {
       status.textContent = `上传中 ${Math.round((loaded / total) * 100)}%(${fmtMb(loaded)}/${fmtMb(total)})`;
     });
@@ -2439,7 +2466,11 @@ async function handleBatchChosen(files: File[]) {
     status.textContent = `正在上传 ${i + 1}/${total}:${r.file.name}`;
     try {
       // 苹果 HEIC:上传前先转成 JPG
-      const work = await convertHeicIfNeeded(r.file, (s) => {
+      let work = await convertHeicIfNeeded(r.file, (s) => {
+        status.textContent = `${i + 1}/${total}:${s}`;
+      });
+      // 相机/手机原图太大:视觉基本无损地压一道再传
+      work = await compressJpegIfNeeded(work, (s) => {
         status.textContent = `${i + 1}/${total}:${s}`;
       });
       // 服务端全量判重(前端只持有已加载页):重复直接跳过,不浪费上传流量
