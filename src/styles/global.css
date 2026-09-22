@@ -935,10 +935,10 @@ body {
 @keyframes skel-shimmer {
   to { background-position: -200% 0; }
 }
-/* 视图切换:新内容淡入+上移。时长刻意放到 ~340ms,用这段动画盖住后台的校验拉取/补满首屏/预载计算——
+/* 视图切换:新内容淡入+上移。时长刻意放到 ~420ms,让后台的校验拉取/补满首屏/预载计算与这段渐变同步进行——
    动画放完时数据也基本就绪,而不是"为了动画而动画"。easeOutQuint:起步快(跟手)、收尾缓(遮住计算) */
 .view-enter {
-  animation: view-in 340ms cubic-bezier(0.22, 1, 0.36, 1);
+  animation: view-in 420ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 @keyframes view-in {
   from {

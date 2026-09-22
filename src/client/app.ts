@@ -492,7 +492,7 @@ function paintStaleList(): boolean {
   animateGridEnterIfNewView();
   return true;
 }
-/** 视图切换时给网格(#card-grid)一次淡入+上移;时长见 CSS .view-enter(~340ms),用来盖住后台校验/补页/预载;同视图的后台替换不重复动画 */
+/** 视图切换时给网格(#card-grid)一次淡入+上移;时长见 CSS .view-enter(~420ms),用来盖住后台校验/补页/预载;同视图的后台替换不重复动画 */
 let lastViewAnimKey = '';
 function animateGridEnterIfNewView() {
   const key = listKey();
@@ -583,7 +583,7 @@ async function refreshList() {
   if (w.favorites) FAVORITES = new Set(w.favorites);
   renderGrid();
   animateGridEnterIfNewView();
-  // 动画(~340ms)进行中:并行补满首屏 → 落盘 → 预载后续页 → 深度预取,用这段动画盖住后台计算
+  // 动画(~420ms)进行中:并行补满首屏 → 落盘 → 预载后续页 → 深度预取,后台计算与渐变同步跑完
   await ensureFill(seq);
   if (seq !== refreshSeq) return;
   writeListCache();
