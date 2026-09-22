@@ -192,11 +192,11 @@ async function init() {
   initSearch();
   initBatch();
   initLightbox();
-  // 无限滚动:接近底部自动加载下一页
+  // 无限滚动:接近底部(提前 800px)静默预取下一页
   window.addEventListener(
     'scroll',
     () => {
-      if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 500) {
+      if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 800) {
         loadMore();
       }
     },
@@ -439,6 +439,7 @@ async function refreshList() {
 async function loadMore() {
   if (loadingMore || !HAS_MORE) return;
   loadingMore = true;
+  updateGridFooter();
   try {
     const d = await fetchPage(PAGE + 1);
     PAGE += 1;
@@ -449,7 +450,25 @@ async function loadMore() {
     await ensureFill();
   } finally {
     loadingMore = false;
+    updateGridFooter();
   }
+}
+/** 底部状态:还有更多时静默(不满一屏滚不动/满一屏看不见,提示均无意义);加载中转圈;加载完一句结束提示 */
+function updateGridFooter() {
+  const grid = $('#media-grid');
+  if (!grid) return;
+  let f = grid.querySelector('.grid-footer') as HTMLElement | null;
+  if (ITEMS.length === 0 || (HAS_MORE && !loadingMore)) {
+    f?.remove();
+    return;
+  }
+  if (!f) {
+    f = document.createElement('div');
+    f.className = 'grid-footer';
+    grid.appendChild(f);
+  }
+  if (loadingMore) f.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> 加载中…';
+  else f.textContent = `已加载全部 ${TOTAL} 个`;
 }
 
 // ---------------- 加载内容 ----------------
@@ -823,12 +842,8 @@ function renderGrid() {
             ? ''
             : `<div class="empty-hint">该菜单下暂无素材</div>`
       : '';
-  const footer = items.length
-    ? HAS_MORE
-      ? `<div class="grid-footer"><i class="fa-solid fa-ellipsis"></i> 滚动加载更多…</div>`
-      : `<div class="grid-footer">已加载全部 ${TOTAL} 个</div>`
-    : '';
-  grid.innerHTML = cards + addTile + emptyHint + footer;
+  grid.innerHTML = cards + addTile + emptyHint;
+  updateGridFooter();
 
   bindGrid();
   if (selectMode) updateBatchBar();
