@@ -175,6 +175,8 @@ async function init() {
   if (isAdmin) $('#btn-users')?.classList.remove('hidden');
   // 补缩略图:管理员一次性运维操作
   if (isAdmin) $('#btn-backfill')?.classList.remove('hidden');
+  // 存储用量:管理员可见
+  if (isAdmin) $('#btn-storage')?.classList.remove('hidden');
   // 批量管理(删除/移动)仅管理员可见:普通用户批量条只保留下载/分享
   if (isAdmin) {
     $('#batch-move')?.classList.remove('hidden');
@@ -220,6 +222,7 @@ function bindHeader() {
   $('#btn-companies')?.addEventListener('click', openOrgModal);
   $('#btn-users')?.addEventListener('click', openUserModal);
   $('#btn-backfill')?.addEventListener('click', backfillThumbs);
+  $('#btn-storage')?.addEventListener('click', openStorageModal);
   $('#btn-batch')?.addEventListener('click', () => setSelectMode(!selectMode));
 
   // 侧栏抽屉开合(平板用顶栏汉堡按钮,手机用底部导航“菜单”)
@@ -326,6 +329,7 @@ function initMobileNav() {
     }
     if (isAdmin) $('#account-users')?.classList.remove('hidden');
     if (isAdmin) $('#account-backfill')?.classList.remove('hidden');
+    if (isAdmin) $('#account-storage')?.classList.remove('hidden');
   }
 
   $('#mnav-search')?.addEventListener('click', () =>
@@ -357,6 +361,10 @@ function initMobileNav() {
   $('#account-backfill')?.addEventListener('click', () => {
     openAccountSheet(false);
     backfillThumbs();
+  });
+  $('#account-storage')?.addEventListener('click', () => {
+    openAccountSheet(false);
+    openStorageModal();
   });
   syncMobileNav();
 }
@@ -2224,6 +2232,14 @@ function uploadFile(
   });
 }
 const fmtMb = (n: number) => `${(n / 1024 / 1024).toFixed(1)}MB`;
+/** 字节人性化:B/KB/MB/GB/TB;≥100 取整,否则一位小数 */
+function fmtBytes(n: number): string {
+  if (!n || n <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+  const i = Math.min(units.length - 1, Math.floor(Math.log(n) / Math.log(1024)));
+  const v = n / Math.pow(1024, i);
+  return `${i === 0 ? Math.round(v) : v.toFixed(v >= 100 ? 0 : 1)} ${units[i]}`;
+}
 
 function generateVideoThumb(file: File): Promise<Blob | null> {
   return new Promise((resolve) => {
@@ -2706,6 +2722,44 @@ async function handleBatchChosen(files: File[]) {
   saveBtn.innerHTML = '完成';
   toast(`批量上传完成:${summary}`, ok === 0 && errCount + unsupported > 0);
   await loadContent();
+}
+
+// ---------------- 存储用量(管理员) ----------------
+async function openStorageModal() {
+  openModal('storage-modal');
+  const list = $('#storage-list') as HTMLElement | null;
+  const total = $('#storage-total') as HTMLElement | null;
+  if (list)
+    list.innerHTML = `<div class="text-sm text-slate-400 py-3"><i class="fa-solid fa-spinner fa-spin"></i> 统计中…</div>`;
+  if (total) total.textContent = '';
+  try {
+    const d = await api<{
+      scope: string;
+      orgs: { id: string; name: string; bytes: number; count: number }[];
+      totalBytes: number;
+      totalCount: number;
+    }>('/api/admin/storage');
+    if (total)
+      total.innerHTML =
+        d.scope === 'all'
+          ? `全部公司合计 <b>${fmtBytes(d.totalBytes)}</b> · ${d.totalCount} 个素材`
+          : `本公司已用 <b>${fmtBytes(d.totalBytes)}</b> · ${d.totalCount} 个素材`;
+    if (list)
+      list.innerHTML = d.orgs.length
+        ? d.orgs
+            .map(
+              (o) => `<div class="list-row">
+                <span class="grow">${escapeHtml(o.name)}</span>
+                <span class="storage-bytes">${fmtBytes(o.bytes)}</span>
+                <span class="storage-count">${o.count} 个</span>
+              </div>`,
+            )
+            .join('')
+        : `<div class="text-sm text-slate-400 py-3">暂无数据</div>`;
+  } catch (e) {
+    if (list)
+      list.innerHTML = `<div class="text-sm text-rose-500 py-3">${escapeHtml((e as Error).message)}</div>`;
+  }
 }
 
 // ---------------- 公司管理 ----------------

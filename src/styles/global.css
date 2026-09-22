@@ -1167,6 +1167,24 @@ body {
   font-size: 14px;
 }
 .list-row .grow { flex: 1; }
+/* 存储用量弹窗 */
+.storage-total {
+  font-size: 14px;
+  color: #334155;
+  padding: 2px 0 12px;
+  border-bottom: 1px solid #e2e8f0;
+  margin-bottom: 4px;
+}
+.storage-total b { color: #2563eb; font-size: 18px; font-weight: 800; }
+.storage-bytes {
+  font-weight: 700;
+  color: #0f172a;
+  font-variant-numeric: tabular-nums;
+  min-width: 84px;
+  text-align: right;
+}
+.storage-count { color: #94a3b8; font-size: 12px; min-width: 54px; text-align: right; }
+.storage-note { margin-top: 12px; font-size: 12px; color: #94a3b8; line-height: 1.5; }
 .tag {
   font-size: 11px;
   font-weight: 700;

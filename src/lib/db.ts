@@ -68,6 +68,32 @@ export async function getOrg(db: D1Database, id: string): Promise<Organization |
     .first<Organization>();
 }
 
+export interface OrgStorage {
+  org_id: string;
+  bytes: number; // 素材原文件 size 合计(不含缩略图)
+  count: number; // 素材条数
+}
+
+/** 统计存储用量:orgId 为 null 时按公司分组返回全部,否则只返回该公司一条 */
+export async function getStorageByOrg(
+  db: D1Database,
+  orgId: string | null,
+): Promise<OrgStorage[]> {
+  if (orgId) {
+    const row = await db
+      .prepare('SELECT COALESCE(SUM(size), 0) AS bytes, COUNT(*) AS count FROM items WHERE org_id = ?')
+      .bind(orgId)
+      .first<{ bytes: number; count: number }>();
+    return [{ org_id: orgId, bytes: row?.bytes ?? 0, count: row?.count ?? 0 }];
+  }
+  const { results } = await db
+    .prepare(
+      'SELECT org_id, COALESCE(SUM(size), 0) AS bytes, COUNT(*) AS count FROM items GROUP BY org_id',
+    )
+    .all<OrgStorage>();
+  return results ?? [];
+}
+
 export async function createOrg(
   db: D1Database,
   name: string,
