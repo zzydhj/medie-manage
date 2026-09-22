@@ -189,8 +189,9 @@ body {
   width: var(--sidebar-w);
   display: flex;
   flex-direction: column;
-  background: linear-gradient(180deg, #f8fafc 0%, #eef2f7 100%);
-  border-right: 1px solid #e2e8f0;
+  /* 现代感:近白平底色 + 发丝分割线,取代旧灰渐变 */
+  background: #fbfcfe;
+  border-right: 1px solid #e9eef4;
   overflow: hidden;
   z-index: 50;
 }
@@ -199,14 +200,15 @@ body {
   min-height: 0;
   overflow-y: auto;
   scrollbar-width: thin;
-  scrollbar-color: #cbd5e1 transparent;
-  padding: 6px 0 8px;
+  scrollbar-color: #dfe5ec transparent;
+  /* 内边距让行圆角可见(悬浮行效果) */
+  padding: 8px;
 }
 .sidebar-scroll::-webkit-scrollbar {
   width: 4px;
 }
 .sidebar-scroll::-webkit-scrollbar-thumb {
-  background: #cbd5e1;
+  background: #dfe5ec;
   border-radius: 4px;
 }
 
@@ -219,35 +221,38 @@ body {
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 9px 12px;
-  min-height: 42px;
+  padding: 8px 10px;
+  min-height: 38px;
+  margin: 1px 0;
+  /* 圆角悬浮行:现代侧栏基底 */
+  border-radius: 10px;
   /* 选中/悬停高亮平滑过渡,避免硬跳 */
   transition:
-    background-color 0.12s ease,
-    color 0.12s ease,
-    border-left-color 0.12s ease;
-  font-size: 14px;
+    background-color 0.15s ease,
+    color 0.15s ease,
+    box-shadow 0.15s ease;
+  font-size: 13.5px;
   font-weight: 600;
-  color: #374151;
+  color: #3f4a5a;
   cursor: pointer;
-  transition: background 0.18s, color 0.18s, border-color 0.18s;
-  border-left: 3px solid transparent;
   user-select: none;
 }
 .menu-row:hover {
-  background: #f1f5f9;
+  background: #f0f4f9;
+  color: #101828;
 }
+/* 选中:软蓝底 + 内发丝线(取代高饱和实心块,Linear/Notion 系现代侧栏语言) */
 .menu-row.active {
-  background: #2563eb;
-  color: #fff;
-  border-left-color: #1e40af;
+  background: #e8f0fe;
+  color: #1d4ed8;
+  box-shadow: inset 0 0 0 1px #c9dcfc;
 }
 .menu-row.active .menu-count {
-  background: rgba(255, 255, 255, 0.28);
-  color: #fff;
+  background: #d7e6fd;
+  color: #1d4ed8;
 }
 .menu-row.active .menu-caret {
-  color: #fff;
+  color: #6ea8f7;
 }
 .menu-label {
   flex: 1;
@@ -291,11 +296,12 @@ body {
 }
 /* 收藏虚拟节点:固定最顶,与下方菜单树分隔 */
 .fav-node {
-  border-bottom: 1px solid #e2e8f0;
-  margin-bottom: 4px;
+  border-bottom: 1px solid #edf1f6;
+  margin: 0 2px 6px;
+  padding-bottom: 6px;
 }
 .fav-node > .menu-row {
-  padding-left: 12px;
+  padding-left: 10px;
   font-weight: 700;
 }
 .fav-icon {
@@ -305,7 +311,7 @@ body {
   color: #f59e0b;
 }
 .menu-row.active .fav-icon {
-  color: #fde68a;
+  color: #f59e0b;
 }
 .menu-count {
   min-width: 20px;
@@ -313,17 +319,23 @@ body {
   padding: 0 6px;
   border-radius: 999px;
   font-size: 11px;
-  font-weight: 700;
+  font-weight: 600;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  background: #e2e8f0;
-  color: #64748b;
+  /* 默认透明:徽章融入行底,只在选中态浮出,视觉更轻 */
+  background: transparent;
+  color: #98a4b5;
+  font-variant-numeric: tabular-nums;
   flex-shrink: 0;
+}
+/* 零值徽章隐藏(占位保留,行宽不跳):一列灰色 0 是旧式侧栏最大噪音 */
+.menu-count.zero {
+  visibility: hidden;
 }
 .menu-caret {
   font-size: 16px;
-  color: #94a3b8;
+  color: #b3bfcd;
   transition: transform 0.2s;
   width: 24px;
   text-align: center;
@@ -346,12 +358,23 @@ body {
 .menu-children > .menu-list {
   overflow: hidden;
   min-height: 0;
+  position: relative;
+}
+/* 层级引导线:子菜单左侧细竖线(树感,取代纯空白缩进) */
+.menu-children > .menu-list::before {
+  content: '';
+  position: absolute;
+  left: 19px;
+  top: 2px;
+  bottom: 2px;
+  width: 1px;
+  background: #e6ebf2;
 }
 /* 层级缩进 */
-.menu-depth-1 > .menu-row { padding-left: 12px; font-weight: 700; }
-.menu-depth-2 > .menu-row { padding-left: 22px; font-size: 13px; }
-.menu-depth-3 > .menu-row { padding-left: 32px; font-size: 13px; font-weight: 500; color: #6b7280; }
-.menu-depth-4 > .menu-row { padding-left: 42px; font-size: 12px; font-weight: 500; color: #6b7280; }
+.menu-depth-1 > .menu-row { padding-left: 10px; font-weight: 600; color: #1f2937; }
+.menu-depth-2 > .menu-row { padding-left: 28px; font-size: 13px; font-weight: 500; }
+.menu-depth-3 > .menu-row { padding-left: 40px; font-size: 12.5px; font-weight: 500; color: #64748b; }
+.menu-depth-4 > .menu-row { padding-left: 52px; font-size: 12px; font-weight: 500; color: #64748b; }
 
 /* 管理员:行内小按钮 */
 .mini-btn {
@@ -374,30 +397,33 @@ body {
   color: #2563eb;
 }
 .menu-row.active .mini-btn {
-  color: rgba(255, 255, 255, 0.85);
+  color: #5b8def;
 }
 .menu-row.active .mini-btn:hover {
-  background: rgba(255, 255, 255, 0.22);
-  color: #fff;
+  background: rgba(37, 99, 235, 0.14);
+  color: #1d4ed8;
 }
 .mini-btn.danger:hover {
   background: rgba(239, 68, 68, 0.14);
   color: #ef4444;
 }
+/* 幽灵行:去虚线框,与菜单行同一套语言(默认透明、悬停 tint) */
 .add-root-btn {
-  margin: 8px 12px;
-  padding: 8px;
-  border-radius: 8px;
-  border: 1px dashed #93c5fd;
-  color: #2563eb;
+  margin: 6px 8px 10px;
+  padding: 9px 10px;
+  border-radius: 10px;
+  border: none;
+  color: #64748b;
   font-size: 13px;
-  font-weight: 700;
+  font-weight: 600;
   cursor: pointer;
-  background: #eff6ff;
-  width: calc(100% - 24px);
+  background: transparent;
+  width: calc(100% - 16px);
+  transition: background 0.15s, color 0.15s;
 }
 .add-root-btn:hover {
-  background: #dbeafe;
+  background: #f0f4f9;
+  color: #2563eb;
 }
 .drag-handle {
   cursor: grab;

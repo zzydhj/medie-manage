@@ -822,19 +822,23 @@ function directHint(n: MenuNode): string {
 }
 // 收藏虚拟节点:固定菜单树最顶,跨菜单展示个人收藏(非真菜单:无子级/不可拖/不进菜单管理)
 function renderFavRow(): string {
+  const c = countFavItems();
   return `
     <div class="menu-node fav-node">
       <div class="menu-row fav-row ${favView ? 'active' : ''}" data-fav="1">
         <span class="menu-caret"></span>
         <i class="fa-solid fa-star fav-icon"></i>
         <span class="menu-label">收藏</span>
-        <span class="menu-count">${countFavItems()}</span>
+        <span class="menu-count${c ? '' : ' zero'}">${c}</span>
       </div>
     </div>`;
 }
 function updateFavCount() {
   const el = document.querySelector('.fav-row .menu-count');
-  if (el) el.textContent = String(countFavItems());
+  if (!el) return;
+  const c = countFavItems();
+  el.textContent = String(c);
+  el.classList.toggle('zero', c === 0);
 }
 function escapeHtml(s: string): string {
   return String(s).replace(/[&<>"']/g, (c) =>
@@ -871,12 +875,13 @@ function renderMenuList(nodes: MenuNode[], parentId: string, depth: number): str
            <button class="mini-btn danger" data-act="del-menu" data-id="${n.id}" title="删除"><i class="fa-solid fa-trash"></i></button>`
         : '';
       const handle = isAdmin ? `<i class="fa-solid fa-grip-vertical drag-handle" title="拖拽排序"></i>` : '';
+      const cnt = countItemsIn(n.id);
       return `
         <div class="menu-node menu-depth-${depth} ${hasKids ? '' : ''}" data-id="${n.id}">
           <div class="menu-row ${isActive ? 'active' : ''}" data-id="${n.id}">
             <span class="menu-caret">${hasKids ? '›' : ''}</span>
             <span class="menu-label" title="${escapeHtml(n.name)}">${escapeHtml(n.name)}</span>
-            <span class="menu-count"${directHint(n)}>${countItemsIn(n.id)}</span>
+            <span class="menu-count${cnt ? '' : ' zero'}"${directHint(n)}>${cnt}</span>
             <span class="menu-actions">${handle}${adminBtns}</span>
           </div>
           ${
