@@ -554,8 +554,8 @@ async function loadContent() {
     selectedMenuId = firstLeafId(MENUS);
   }
   saveView(); // 把当前生效视图落盘,供下次刷新恢复
+  renderSidebar(); // 树先出来:新建/改名菜单不必等素材页往返
   await refreshList();
-  renderSidebar();
   if (isAdmin) $('#add-root-menu')?.classList.remove('hidden');
   schedulePrefetch(); // 首屏稳定后后台预取各菜单第一页,让后续切换命中缓存
 }
@@ -618,7 +618,16 @@ function escapeHtml(s: string): string {
 function renderSidebar() {
   const host = $('#menu-tree');
   if (!host) return;
+  // 记住当前展开的菜单,重建后恢复(否则重载/乐观插入会把展开态打掉)
+  const openIds = new Set(
+    Array.from(host.querySelectorAll('.menu-node.open')).map(
+      (n) => (n as HTMLElement).dataset.id || '',
+    ),
+  );
   host.innerHTML = renderFavRow() + renderMenuList(MENUS, '', 1);
+  openIds.forEach((id) => {
+    if (id) host.querySelector(`.menu-node[data-id="${id}"]`)?.classList.add('open');
+  });
   bindMenuTree();
 }
 
@@ -2426,13 +2435,37 @@ function bindModals() {
           body: JSON.stringify({ name }),
         });
         toast('已重命名');
+        // 乐观改名:侧栏立即反映,不等后续往返
+        const m = findMenu(MENUS, editingMenuId);
+        if (m) {
+          m.name = name;
+          renderSidebar();
+        }
       } else {
-        await api('/api/menus', {
+        const created = await api<{ menu: MenuNode }>('/api/menus', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ name, parentId: menuParentId }),
         });
         toast('已新增菜单');
+        // 乐观插入:新菜单立即进树并渲染,不必等 meta+素材页两次往返
+        const node = created?.menu;
+        if (node?.id) {
+          const withKids: MenuNode = { ...node, children: [] };
+          if (withKids.parent_id) {
+            const p = findMenu(MENUS, withKids.parent_id);
+            if (p) p.children = [...(p.children || []), withKids];
+          } else {
+            MENUS = [...MENUS, withKids];
+          }
+          COUNTS[withKids.id] = 0;
+          renderSidebar();
+          // 展开父级,让新建的子菜单立即可见
+          if (withKids.parent_id)
+            $('#menu-tree')
+              ?.querySelector(`.menu-node[data-id="${withKids.parent_id}"]`)
+              ?.classList.add('open');
+        }
       }
       closeModal('menu-modal');
       await loadContent();
