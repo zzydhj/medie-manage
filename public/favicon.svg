@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!--
+    资料素材库 favicon。设计基准文件:scripts/gen-icons.mjs 按同一套几何栅格化成 PNG/ICO。
+    改这里请同步改脚本里的 BG/BACK/FRONT/SUN/MOUNTAIN 常量。
+    配色与登录页 logo、theme-color(#1e3a8a)同色系:品牌蓝渐变 #2563eb -> #60a5fa。
+  -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2563eb" />
+      <stop offset="1" stop-color="#60a5fa" />
+    </linearGradient>
+    <clipPath id="card">
+      <rect x="19.5" y="19.5" width="32" height="32" rx="6" />
+    </clipPath>
+  </defs>
+
+  <!-- 品牌底:蓝色渐变圆角方块 -->
+  <rect width="64" height="64" rx="14" fill="url(#bg)" />
+
+  <!-- 后层卡片:半透明,表达“素材堆 / 库” -->
+  <rect x="12.5" y="12.5" width="32" height="32" rx="6" fill="#fff" opacity="0.45" />
+
+  <!-- 前层卡片:一张图片(太阳 + 山),表达“素材” -->
+  <rect x="19.5" y="19.5" width="32" height="32" rx="6" fill="#fff" />
+  <g clip-path="url(#card)">
+    <circle cx="29" cy="29" r="3.5" fill="#60a5fa" />
+    <path d="M19.5 51.5 L30 38 L37 44.5 L44 36 L51.5 51.5 Z" fill="#2563eb" />
+  </g>
+</svg>

@@ -11,7 +11,8 @@
     "db:migrate:local": "wrangler d1 migrations apply medie-manage-db --local",
     "db:migrate:remote": "wrangler d1 migrations apply medie-manage-db --remote",
     "db:create": "wrangler d1 create medie-manage-db",
-    "seed:admin": "node scripts/seed-admin.mjs"
+    "seed:admin": "node scripts/seed-admin.mjs",
+    "icons": "node scripts/gen-icons.mjs"
   },
   "dependencies": {
     "@astrojs/cloudflare": "^12.1.0",

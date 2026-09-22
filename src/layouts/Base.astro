@@ -16,6 +16,10 @@ const { title = '资料素材库' } = Astro.props;
     <!-- theme-color:不支持 cover 的浏览器会把状态栏/顶部区域涂成默认灰;设为品牌蓝与顶栏/底部导航同色 -->
     <meta name="theme-color" content="#1e3a8a" />
     <title>{title}</title>
+    <!-- favicon:SVG 为主(现代浏览器,任意缩放清晰);ICO 兜底旧浏览器;apple-touch-icon 供 iOS 添加到主屏 -->
+    <link rel="icon" href="/favicon.ico" sizes="16x16 32x32 48x48" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <link
       rel="stylesheet"
       href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css"
