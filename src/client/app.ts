@@ -1181,6 +1181,11 @@ function bindGrid() {
     b.addEventListener('click', async (e) => {
       e.stopPropagation();
       const icon = b.querySelector('i');
+      const btn = b as HTMLButtonElement;
+      // 大图取回要几秒:点击瞬间先给转圈+提示,避免以为没反应/重复点
+      btn.disabled = true;
+      if (icon) icon.className = 'fa-solid fa-spinner fa-spin';
+      toast('正在复制中…');
       try {
         await copyImageToClipboard(b.dataset.url!);
         toast('图片已复制,可直接粘贴');
@@ -1189,7 +1194,10 @@ function bindGrid() {
           window.setTimeout(() => (icon.className = 'fa-regular fa-copy'), 1200);
         }
       } catch (err) {
+        if (icon) icon.className = 'fa-regular fa-copy';
         toast((err as Error).message, true);
+      } finally {
+        btn.disabled = false;
       }
     });
   });
