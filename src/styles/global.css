@@ -1261,6 +1261,10 @@ body.select-mode .card-actions { display: none; }
 .batch-btn.ghost { background: #f1f5f9; color: #475569; }
 .batch-btn.ghost:hover { background: #e2e8f0; }
 .batch-btn.ghost:disabled { background: #f1f5f9; color: #cbd5e1; }
+/* 危险操作(批量删除):红调,声明在 ghost 之后以覆盖同权重背景/文字色 */
+.batch-btn.danger { background: #fee2e2; color: #dc2626; }
+.batch-btn.danger:hover { background: #fecaca; }
+.batch-btn.danger:disabled { background: #f1f5f9; color: #cbd5e1; }
 /* 分享键在不支持系统分享的浏览器里由 JS 隐藏 */
 .batch-btn.hidden { display: none; }
 

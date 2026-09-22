@@ -118,6 +118,13 @@ if (!user) {
     <button class="batch-btn ghost" id="batch-zip" type="button" title="打包成一个 ZIP 下载(浏览器拦截多文件下载时用)">
       <i class="fa-solid fa-file-zipper"></i><span>打包</span>
     </button>
+    <!-- 管理类操作:仅管理员可见(JS 按 isAdmin 去掉 hidden);普通用户批量条只有下载/分享 -->
+    <button class="batch-btn ghost hidden" id="batch-move" type="button" title="移动到其它分组">
+      <i class="fa-solid fa-folder-open"></i><span>移动</span>
+    </button>
+    <button class="batch-btn ghost danger hidden" id="batch-delete" type="button" title="删除所选素材">
+      <i class="fa-solid fa-trash"></i><span>删除</span>
+    </button>
     <button class="batch-btn ghost" id="batch-exit" type="button" title="退出批量">
       <i class="fa-solid fa-xmark"></i>
     </button>
@@ -238,6 +245,26 @@ if (!user) {
       <div class="modal-foot">
         <button class="btn btn-ghost" data-close="item-edit-modal">取消</button>
         <button id="item-edit-save" class="btn btn-primary">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== 批量移动分组 弹窗(管理员) ===== -->
+  <div id="batch-move-modal" class="modal-mask">
+    <div class="modal-box">
+      <div class="modal-head">
+        <span>移动到分组</span>
+        <button class="mini-btn" data-close="batch-move-modal"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div class="modal-body">
+        <div class="field">
+          <label id="batch-move-tip">目标分组</label>
+          <select id="batch-move-menu"></select>
+        </div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn btn-ghost" data-close="batch-move-modal">取消</button>
+        <button id="batch-move-confirm" class="btn btn-primary">移动</button>
       </div>
     </div>
   </div>

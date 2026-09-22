@@ -175,6 +175,11 @@ async function init() {
   if (isAdmin) $('#btn-users')?.classList.remove('hidden');
   // 补缩略图:管理员一次性运维操作
   if (isAdmin) $('#btn-backfill')?.classList.remove('hidden');
+  // 批量管理(删除/移动)仅管理员可见:普通用户批量条只保留下载/分享
+  if (isAdmin) {
+    $('#batch-move')?.classList.remove('hidden');
+    $('#batch-delete')?.classList.remove('hidden');
+  }
 
   bindHeader();
   initMobileNav();
@@ -1261,6 +1266,9 @@ function initBatch() {
   $('#batch-download')?.addEventListener('click', () => batchDownload(false));
   $('#batch-zip')?.addEventListener('click', () => batchDownload(true));
   $('#batch-share')?.addEventListener('click', batchShare);
+  $('#batch-move')?.addEventListener('click', openBatchMoveModal);
+  $('#batch-delete')?.addEventListener('click', batchDelete);
+  $('#batch-move-confirm')?.addEventListener('click', batchMove);
   // Esc 退出批量模式
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && selectMode) setSelectMode(false);
@@ -1332,8 +1340,12 @@ function updateBatchBar() {
   if (dlLabel) dlLabel.textContent = n > 1 ? `下载 ${n} 个` : '下载';
   const shareLabel = $('#batch-share')?.querySelector('span');
   if (shareLabel) shareLabel.textContent = n > 1 ? `分享 ${n} 个` : '分享';
+  const moveLabel = $('#batch-move')?.querySelector('span');
+  if (moveLabel) moveLabel.textContent = n > 1 ? `移动 ${n} 个` : '移动';
+  const delLabel = $('#batch-delete')?.querySelector('span');
+  if (delLabel) delLabel.textContent = n > 1 ? `删除 ${n} 个` : '删除';
 
-  ['#batch-download', '#batch-zip', '#batch-share'].forEach((sel) => {
+  ['#batch-download', '#batch-zip', '#batch-share', '#batch-move', '#batch-delete'].forEach((sel) => {
     const b = $(sel) as HTMLButtonElement | null;
     if (b) b.disabled = n === 0;
   });
@@ -1439,6 +1451,98 @@ async function batchShare() {
 function setBatchProgress(btn: HTMLElement | null, done: number, total: number) {
   if (btn && total > 1)
     btn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i><span>${done}/${total}</span>`;
+}
+
+/** 对勾选素材批量执行操作:逐个调用、按钮显示进度、收集失败项;返回成功数与失败明细 */
+async function runBatchOp(
+  items: ItemDTO[],
+  btn: HTMLButtonElement | null,
+  op: (it: ItemDTO) => Promise<unknown>,
+): Promise<{ ok: number; failed: { title: string; msg: string }[] }> {
+  const html = btn?.innerHTML ?? '';
+  if (btn) btn.disabled = true;
+  let ok = 0;
+  const failed: { title: string; msg: string }[] = [];
+  try {
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i];
+      try {
+        await op(it);
+        ok++;
+      } catch (e) {
+        failed.push({ title: it.title || it.filename || '素材', msg: (e as Error).message });
+      }
+      setBatchProgress(btn, i + 1, items.length);
+    }
+  } finally {
+    if (btn) btn.innerHTML = html;
+  }
+  return { ok, failed };
+}
+
+/** 批量操作结果统一提示:全成功绿色,有失败红色并带首个失败原因 */
+function reportBatch(done: string, ok: number, failed: { title: string; msg: string }[]) {
+  if (failed.length === 0) toast(`${done} ${ok} 个`);
+  else
+    toast(
+      `${done} ${ok} 个,${failed.length} 个失败:${failed[0].title}(${failed[0].msg})`,
+      true,
+      4000,
+    );
+}
+
+/** 批量删除:二次确认 → 逐个调 DELETE(服务端清理 R2 + 数据库)→ 刷新 */
+async function batchDelete() {
+  const items = pickedItems();
+  if (!items.length) return toast('请先勾选素材', true);
+  if (!confirm(`确定删除所选 ${items.length} 个素材?此操作不可恢复。`)) return;
+  const { ok, failed } = await runBatchOp(
+    items,
+    $('#batch-delete') as HTMLButtonElement | null,
+    (it) => api(`/api/items/${it.id}`, { method: 'DELETE' }),
+  );
+  reportBatch('已删除', ok, failed);
+  SELECTED.clear();
+  await loadContent();
+  updateBatchBar();
+}
+
+/** 打开批量移动弹窗:填充分组下拉,若所选同属一个分组则默认选中它 */
+function openBatchMoveModal() {
+  const items = pickedItems();
+  if (!items.length) return toast('请先勾选素材', true);
+  const sel = $('#batch-move-menu') as HTMLSelectElement;
+  sel.innerHTML = flattenMenus(MENUS)
+    .map((m) => `<option value="${m.id}">${escapeHtml(m.label)}</option>`)
+    .join('');
+  const first = items[0].menu_id;
+  if (first && items.every((i) => i.menu_id === first)) sel.value = first;
+  const tip = $('#batch-move-tip');
+  if (tip) tip.textContent = `把 ${items.length} 个素材移动到`;
+  openModal('batch-move-modal');
+}
+
+/** 批量移动:逐个 PATCH menuId(与单个换分组同一接口)→ 刷新 */
+async function batchMove() {
+  const items = pickedItems();
+  if (!items.length) return toast('请先勾选素材', true);
+  const menuId = ($('#batch-move-menu') as HTMLSelectElement).value;
+  if (!menuId) return toast('请选择目标分组', true);
+  const { ok, failed } = await runBatchOp(
+    items,
+    $('#batch-move-confirm') as HTMLButtonElement | null,
+    (it) =>
+      api(`/api/items/${it.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ menuId }),
+      }),
+  );
+  closeModal('batch-move-modal');
+  reportBatch('已移动', ok, failed);
+  SELECTED.clear();
+  await loadContent();
+  updateBatchBar();
 }
 
 function sleep(ms: number) {
