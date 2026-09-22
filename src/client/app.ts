@@ -484,13 +484,13 @@ function paintStaleList(): boolean {
   animateGridEnterIfNewView();
   return true;
 }
-/** 视图切换时给网格一次 150ms 淡入+上移;同视图的后台校准替换不重复动画,保持秒开体感 */
+/** 视图切换时给网格(#card-grid)一次淡入+上移;时长见 CSS .view-enter(~340ms),用来盖住后台校验/补页/预载;同视图的后台替换不重复动画 */
 let lastViewAnimKey = '';
 function animateGridEnterIfNewView() {
   const key = listKey();
   if (key === lastViewAnimKey) return;
   lastViewAnimKey = key;
-  const grid = $('#media-grid');
+  const grid = $('#card-grid');
   if (!grid) return;
   grid.classList.remove('view-enter');
   void grid.offsetWidth; // 强制回流以重播动画
@@ -575,6 +575,7 @@ async function refreshList() {
   if (w.favorites) FAVORITES = new Set(w.favorites);
   renderGrid();
   animateGridEnterIfNewView();
+  // 动画(~340ms)进行中:并行补满首屏 → 落盘 → 预载后续页 → 深度预取,用这段动画盖住后台计算
   await ensureFill(seq);
   if (seq !== refreshSeq) return;
   writeListCache();
@@ -649,7 +650,7 @@ async function deepPrefetch() {
 }
 /** 底部状态:还有更多时静默(不满一屏滚不动/满一屏看不见,提示均无意义);加载中转圈;加载完一句结束提示 */
 function updateGridFooter() {
-  const grid = $('#media-grid');
+  const grid = $('#card-grid');
   if (!grid) return;
   let f = grid.querySelector('.grid-footer') as HTMLElement | null;
   if (ITEMS.length === 0 || (HAS_MORE && !loadingMore)) {
@@ -702,7 +703,7 @@ function schedulePrefetch() {
 }
 /** 无缓存切换时立即铺骨架屏:视觉"瞬间有响应",避免空白等待感 */
 function renderSkeleton() {
-  const grid = $('#media-grid');
+  const grid = $('#card-grid');
   if (!grid) return;
   grid.innerHTML = Array.from({ length: 12 })
     .map(() => `<div class="skel-card"><div class="skel-thumb"></div><div class="skel-line"></div></div>`)
