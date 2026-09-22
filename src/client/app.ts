@@ -1995,8 +1995,8 @@ function initLightbox() {
 }
 
 // ---------------- 每行列数(卡片密度,账户级持久化) ----------------
-// 设备默认:PC 12 列 / 手机 3 列;账户已保存的值(users.grid_cols)优先
-const COLS_DEFAULT_PC = 12;
+// 设备默认:PC 10 列 / 手机 3 列;账户已保存的值(users.grid_cols)优先
+const COLS_DEFAULT_PC = 10;
 const COLS_DEFAULT_MOBILE = 3;
 
 function persistCols(n: number) {

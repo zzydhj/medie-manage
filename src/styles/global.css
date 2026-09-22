@@ -420,7 +420,7 @@ body {
 }
 .card-grid {
   display: grid;
-  grid-template-columns: repeat(var(--grid-cols, 6), minmax(0, 1fr));
+  grid-template-columns: repeat(var(--grid-cols, 10), minmax(0, 1fr));
   gap: var(--grid-gap, 12px);
 }
 /* 高密度(≥10 列):缩小间距、标题与角标,让卡片更紧凑 */
