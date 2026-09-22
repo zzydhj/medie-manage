@@ -15,6 +15,8 @@ function guessType(mime: string, filename: string): ItemType | null {
   const m = (mime || '').toLowerCase();
   const ext = extFromName(filename);
   if (m.startsWith('image/')) return 'image';
+  // 苹果 HEIC/HEIF:部分浏览器报 octet-stream,用扩展名兜底归为图片
+  if (ext === '.heic' || ext === '.heif') return 'image';
   if (m.startsWith('video/')) return 'video';
   if (m === 'application/pdf' || ext === '.pdf') return 'pdf';
   if (
