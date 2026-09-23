@@ -851,19 +851,17 @@ function updateGridFooter() {
 //  R1 一条队列刷全站:整库清单 → 每个分组的首屏列表落缓存 → 所有素材的预览字节进 HTTP 缓存
 //  R2 用户点哪 / 悬停哪,哪的排到队首(bgPrioritize)
 //  R3 用户有上传 / 下载 / 预览 / 切视图 / 翻页任务时,引擎全停让路(bgHold / bgRelease)
-//  R4 大文件(老图片没缩略图时卡片挂的原图)走慢车道:单并发,只在快车道刷完且用户空闲时 trickle
+//  R4 大文件(老图片没缩略图时卡片挂的原图)不预载:点开/下载时按需加载。
+//     (曾做"慢车道预载原图",但几百 MB 原图会挤爆 HTTP 缓存、把刚看过的小缩略图驱逐掉,
+//      导致"加载好→回来又白",已删除;引擎只预载小缩略图)
 // 抓取一律 priority:'low' + 3 并发:永远排在卡片自身 <img> 之后,不与前台抢带宽
-const BG_FAST_WORKERS = 3; // 快车道并发(缩略图小文件)
+const BG_FAST_WORKERS = 3; // 并发(缩略图小文件)
 const BG_PLAN_PAGE = 100; // 整库清单分页大小(服务端上限 100)
 const BG_MAX_ITEMS = 5000; // 超大库封顶:清单最多取前 5000 条,其余靠下次重规划补
-const BG_BIG_MAX = 8 * 1024 * 1024; // 单个原图超过 8MB 不进慢车道(留给点开时按需加载)
-const BG_BIG_BUDGET = 600 * 1024 * 1024; // 慢车道总预算:防撑爆浏览器缓存配额
 const BG_SEED_PAGE_CACHE_MAX = 300; // 内存页缓存最多铺到多少个视图(其余靠 localStorage 秒开)
 
-let bgFast: string[] = []; // 快车道队列(缩略图),顺序即优先级
+let bgFast: string[] = []; // 缩略图队列,顺序即优先级
 let bgFastAt = 0;
-let bgSlow: string[] = []; // 慢车道队列(大原图)
-let bgSlowAt = 0;
 let bgViews = new Map<string, string[]>(); // url → 归属视图(''=整库 / menuId / 'fav')
 let bgTotal = 0; // 本轮待抓总数(进度文案用)
 let bgDone = 0;
@@ -872,8 +870,6 @@ let bgDirty = false; // 跑的过程中发生过变更(上传/删除/移动/换�
 let bgUserBusy = 0; // 用户任务计数:>0 时引擎暂停
 let bgUserSince = 0;
 let bgFastWorkers = 0;
-let bgSlowWorkers = 0;
-let bgLastHeal = 0;
 let bgParent = new Map<string, string | null>(); // menuId → parent_id(算素材归属哪些分组视图)
 
 /** 当前视图归属键:与 listKey / pageCacheKey 的 view 段一致(收藏='fav',菜单=id,整库='') */
@@ -935,10 +931,7 @@ function bgStart() {
   })();
 }
 async function bgWaitDrained(org: string) {
-  while (
-    org === activeOrgId &&
-    (bgFastWorkers > 0 || bgSlowWorkers > 0 || bgFastAt < bgFast.length || bgSlowAt < bgSlow.length)
-  ) {
+  while (org === activeOrgId && (bgFastWorkers > 0 || bgFastAt < bgFast.length)) {
     await sleep(1000);
   }
 }
@@ -1021,36 +1014,26 @@ function bgSeedLists(org: string, all: ItemDTO[], favs: string[]) {
     if (seeded++ < LIST_CACHE_MAX_VIEWS) writePrefetchCache(`${LIST_CACHE_PREFIX}${org}|||${view}`, d);
   });
 }
-/** R1 第三步 + R2 + R4:排预览字节队列。卡片实际渲染的地址=缩略图;老图片没缩略图时=原图(大文件)。
- *  大文件走慢车道(当前视图的除外——用户正看着它);移动端只刷缩略图省流量 */
+/** R1 第三步 + R2:排缩略图字节队列。只预载缩略图(小文件);没缩略图的老图片/大原图不预载,
+ *  点开或下载时按需加载——预载大文件会挤爆 HTTP 缓存、驱逐刚看过的缩略图(回来又白的元凶之一) */
 function bgSeedBytes(all: ItemDTO[], favSet: Set<string>) {
-  const scope = bgScope();
-  const mobile = isMobileViewport();
   const fast: string[] = [];
-  const slow: string[] = [];
   const seen = new Set<string>();
   const views = new Map<string, string[]>();
-  let budget = BG_BIG_BUDGET;
   for (const it of all) {
-    const big = !it.thumb_url && it.type === 'image'; // 无缩略图的老图片:卡片挂的就是原图
-    const url = it.thumb_url || (it.type === 'image' ? it.file_url : '');
+    const url = it.thumb_url || '';
     if (!url || seen.has(url)) continue;
-    const size = it.size ?? 0;
-    if (big && (mobile || size > BG_BIG_MAX || size > budget)) continue; // 太大/超预算:留给按需加载
-    if (big) budget -= size;
     seen.add(url);
     const vs = ['', ...bgChainOf(it.menu_id)];
     if (favSet.has(it.id)) vs.push('fav');
     views.set(url, vs);
-    (big && !vs.includes(scope) ? slow : fast).push(url);
+    fast.push(url);
   }
   bgViews = views;
   bgFast = fast;
   bgFastAt = 0;
-  bgSlow = slow;
-  bgSlowAt = 0;
   bgDone = 0;
-  bgTotal = fast.length + slow.length;
+  bgTotal = fast.length;
   bgPrioritize();
   bgReport();
 }
@@ -1068,17 +1051,12 @@ function bgSpawn(org: string) {
   // 换公司重规划后,旧公司的工人可能还卡在 await fetch 里没退出。先把计数归零再拉起一组新工人,
   // 保证新公司一定拿到满编;旧工人退出时用 Math.max 兜底,不会把计数打成负数
   bgFastWorkers = 0;
-  bgSlowWorkers = 0;
   while (bgFastWorkers < BG_FAST_WORKERS) {
     bgFastWorkers++;
     void bgRunFast(org).finally(() => {
       bgFastWorkers = Math.max(0, bgFastWorkers - 1);
     });
   }
-  bgSlowWorkers = 1;
-  void bgRunSlow(org).finally(() => {
-    bgSlowWorkers = Math.max(0, bgSlowWorkers - 1);
-  });
 }
 async function bgRunFast(org: string) {
   for (;;) {
@@ -1086,18 +1064,6 @@ async function bgRunFast(org: string) {
     await bgWaitUser(); // R3:用户任务优先
     if (bgFastAt >= bgFast.length) return;
     await bgFetch(bgFast[bgFastAt++]);
-  }
-}
-async function bgRunSlow(org: string) {
-  for (;;) {
-    if (activeOrgId !== org) return; // 换公司:旧工人立即退出
-    if (bgSlowAt >= bgSlow.length) return;
-    // R4:快车道没刷完或用户有任务时原地等——大文件绝不挤占缩略图带宽
-    if (bgFastAt < bgFast.length || bgUserBusy > 0) {
-      await sleep(1500);
-      continue;
-    }
-    await bgFetch(bgSlow[bgSlowAt++]);
   }
 }
 async function bgFetch(url: string) {
@@ -1109,11 +1075,6 @@ async function bgFetch(url: string) {
   }
   bgDone++;
   if (bgDone % 8 === 0) bgReport();
-  const now = Date.now();
-  if (now - bgLastHeal > 4000) {
-    bgLastHeal = now;
-    healPendingThumbs(); // 缓存已暖:顺手把网格里还空着的图补上
-  }
 }
 // ---------------- 新设备首登进度窗:纯 UI,真正干活的是上面的后台加载引擎 ----------------
 // 首次打开(本机无任何列表缓存)时全屏弹窗:进度条纯时间驱动(0 起跑,~90 秒到 100%),
@@ -1130,9 +1091,8 @@ function bgReport() {
     ? `正在缓存素材预览 ${Math.min(bgDone, bgTotal)} / ${bgTotal}`
     : '正在整理素材清单…';
 }
-/** 全站刷完:落 done 标记(下次不再弹进度窗)+ 自愈一遍还空着的缩略图 */
+/** 全站缩略图刷完:落 done 标记(下次不再弹进度窗) */
 function bgFinish() {
-  healPendingThumbs();
   if (!activeOrgId || !bgTotal) return;
   try {
     localStorage.setItem(`${WARMUP_PREFIX}${activeOrgId}`, 'done');
@@ -1159,16 +1119,13 @@ function startWarmupUi() {
   if (!overlay) return;
   overlay.classList.remove('hidden');
   const t0 = Date.now();
-  let tick = 0;
   window.clearInterval(warmupUiTimer);
   warmupUiTimer = window.setInterval(() => {
-    tick++;
     const p = Math.min(100, Math.round(((Date.now() - t0) / WARMUP_UI_MS) * 100));
     const bar = $('#warmup-bar');
     const pct = $('#warmup-pct');
     if (bar) bar.style.width = `${p}%`;
     if (pct) pct.textContent = `${p}%`;
-    if (tick % 32 === 0) healPendingThumbs(); // 每 ~8s 自愈一批网格卡死的空白缩略图
     if (p >= 100) closeWarmupUi(); // 到 100% 必关,不管缓存刷完没
   }, 250);
 }
@@ -1186,24 +1143,6 @@ function closeWarmupUi() {
       // localStorage 不可用时忽略
     }
   }
-}
-/** 自愈空白缩略图:网格里迟迟没出图的卡片换新元素重拉一次(每个 img 限一次)。
- *  两遍制:第一遍只打标记(给它在飞请求正常加载的时间,不打断),第二遍(≥4 秒后)还空着才换;
- *  换元素而不是改 src:改 src='' 会触发 onerror,把「缩略图→原图→无预览」回退链提前用掉 */
-function healPendingThumbs() {
-  document.querySelectorAll<HTMLImageElement>('#card-grid img').forEach((img) => {
-    if (img.dataset.healed) return;
-    if (img.complete && img.naturalWidth > 0) return; // 已正常出图,不动
-    const s = img.getAttribute('src');
-    if (!s) return;
-    if (!img.dataset.healSeen) {
-      img.dataset.healSeen = '1';
-      return;
-    }
-    const fresh = img.cloneNode(true) as HTMLImageElement; // 带上 src/onerror/data-fb 全链
-    fresh.dataset.healed = '1';
-    img.replaceWith(fresh); // 缓存已暖=瞬间完成;真坏了由新元素自己的 onerror 走回退链
-  });
 }
 /** 无缓存切换时立即铺骨架屏:视觉"瞬间有响应",避免空白等待感 */
 function renderSkeleton() {
