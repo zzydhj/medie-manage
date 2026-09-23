@@ -966,6 +966,12 @@ function bindMenuTree() {
       } else if (hasKids) {
         node.classList.add('open');
       }
+      // 手风琴补齐:选中任意菜单后,收起所有非其祖先的展开一级菜单。
+      // 原来只在点「有子级的一级菜单」分支里收其它组,点叶子菜单(无子集)时旧组会一直敞着
+      const ancTop = node.closest('.menu-node.menu-depth-1');
+      document.querySelectorAll('.menu-node.menu-depth-1.open').forEach((n) => {
+        if (n !== ancTop) n.classList.remove('open');
+      });
       selectedMenuId = id;
       favView = false;
       saveView();
