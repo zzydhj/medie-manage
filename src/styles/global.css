@@ -778,12 +778,18 @@ body {
   position: relative;
   width: 100%;
   aspect-ratio: 1 / 1;
-  background: #f1f5f9;
+  /* 预览字节未到达前是微光浅灰底(不是纯白):视觉读作"在加载"而非"坏了";img 加载完即盖住 */
+  background: linear-gradient(100deg, #f1f5f9 40%, #e4e9f0 50%, #f1f5f9 60%);
+  background-size: 200% 100%;
+  animation: thumb-wait 1.4s linear infinite;
   overflow: hidden;
   display: flex;
   align-items: center;
   justify-content: center;
   cursor: zoom-in;
+}
+@keyframes thumb-wait {
+  to { background-position: -200% 0; }
 }
 .media-thumb img,
 .media-thumb video {

@@ -95,6 +95,21 @@ const TYPE_META: Record<ItemType, { label: string; icon: string; cls: string; pr
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const $ = (sel: string): any => document.querySelector(sel);
 
+// 卡片预览图加载失败自愈:缩略图对象缺失/损坏→回退原图(data-fb);原图也失败→
+// 换"无预览"占位,杜绝坏 img 让卡片永久空白(老库缩略图对象丢失时不用管理员手动补图)
+(window as unknown as Record<string, unknown>).__mmImgErr = (img: HTMLImageElement) => {
+  const fb = img.dataset.fb;
+  if (fb) {
+    delete img.dataset.fb;
+    img.src = fb;
+    return;
+  }
+  const ph = document.createElement('div');
+  ph.className = 'text-slate-300 text-xs';
+  ph.textContent = '无预览';
+  img.replaceWith(ph);
+};
+
 // 手机端断点:与 global.css 的 @media (max-width: 767px) 保持一致
 const MOBILE_QUERY = '(max-width: 767px)';
 function isMobileViewport(): boolean {
@@ -628,8 +643,22 @@ function writePrefetchCache(key: string, d: PageData) {
 }
 /** 用上次落的列表立即渲染(刷新秒开);返回是否命中 */
 function paintStaleList(): boolean {
-  const stale = readListCache(listKey());
+  const key = listKey();
+  const stale = readListCache(key);
   if (!stale) return false;
+  // 防串内容:菜单视图校验缓存项确属该菜单子树(历史污染缓存直接丢弃自愈);
+  // 搜索/收藏视图素材本就越菜单,不校验;MENUS 未加载时也无法校验,跳过
+  if (!favView && !searchQuery.trim() && selectedMenuId && MENUS.length) {
+    const ids = new Set(subtreeIdsClient(MENUS, selectedMenuId));
+    if (stale.items.some((it) => !ids.has(it.menu_id))) {
+      try {
+        localStorage.removeItem(key);
+      } catch {
+        // 忽略
+      }
+      return false;
+    }
+  }
   ITEMS = stale.items;
   TOTAL = stale.total;
   HAS_MORE = ITEMS.length < TOTAL;
@@ -686,7 +715,11 @@ async function ensureFill(seq = refreshSeq) {
     seq === refreshSeq &&
     document.documentElement.scrollHeight <= window.innerHeight + 300
   ) {
-    appendWindow(await fetchWindow(PAGE + 1, 3));
+    const w = await fetchWindow(PAGE + 1, 3);
+    // 补页返回后必须复查:这几页可能是切分组前发起的旧视图请求,
+    // 不查就把旧分组素材拼进新列表(串内容),还会被 writeListCache 落盘固化
+    if (seq !== refreshSeq) return;
+    appendWindow(w);
   }
 }
 /** 后台静默预载剩余页:首屏填满后尽快把后面内容全量拉进已加载窗口,
@@ -995,12 +1028,21 @@ async function maybeWarmup() {
     const seen = new Set<string>();
     const queue: string[] = [];
     const rest: string[] = [];
-    const curUrls = new Set(ITEMS.map((it) => it.thumb_url).filter((u): u is string => !!u));
+    // 卡片实际渲染的预览地址:缩略图优先;老图片无缩略图时挂的是原图→预热必须缓存原图字节
+    const previewUrl = (it: ItemDTO) => it.thumb_url || (it.type === 'image' ? it.file_url : '');
+    const curUrls = new Set(ITEMS.map(previewUrl).filter((u) => !!u));
+    let imgBudget = 400 * 1024 * 1024; // 无缩略图老图片的原图预算:超出的留给按需懒加载+深度预载
     for (const it of all.slice(0, WARMUP_MAX_ITEMS)) {
-      if (!it.thumb_url || seen.has(it.thumb_url)) continue;
-      seen.add(it.thumb_url);
-      // 当前视图缩略图排最前(用户正看的先不白),其余全库(所有菜单)随后
-      (curUrls.has(it.thumb_url) ? queue : rest).push(it.thumb_url);
+      const url = previewUrl(it);
+      if (!url || seen.has(url)) continue;
+      seen.add(url);
+      if (!it.thumb_url && it.type === 'image') {
+        const sz = it.size ?? 0;
+        if (sz > imgBudget) continue;
+        imgBudget -= sz;
+      }
+      // 当前视图排最前(用户正看的先不白),其余全库(所有菜单)随后
+      (curUrls.has(url) ? queue : rest).push(url);
     }
     queue.push(...rest);
     const total = queue.length;
@@ -1112,6 +1154,19 @@ function findMenu(nodes: MenuNode[], id: string): MenuNode | null {
     if (f) return f;
   }
   return null;
+}
+/** 客户端子树 id 集合(含自身):与服务端 subtreeIds 同语义,用于校验列表缓存是否串了别的分组 */
+function subtreeIdsClient(nodes: MenuNode[], id: string): string[] {
+  const target = findMenu(nodes, id);
+  if (!target) return [];
+  const out: string[] = [target.id];
+  const walk = (ns: MenuNode[]) =>
+    ns.forEach((n) => {
+      out.push(n.id);
+      if (n.children?.length) walk(n.children);
+    });
+  walk(target.children);
+  return out;
 }
 function firstLeafId(nodes: MenuNode[]): string | null {
   for (const n of nodes) {
@@ -1495,7 +1550,10 @@ function renderGrid() {
           ? `<button class="copy-btn" data-act="copy-image" data-url="${it.file_url}" title="复制图片"><i class="fa-regular fa-copy"></i></button>`
           : '');
       const thumbInner = previewSrc
-        ? `<img src="${previewSrc}" alt="${escapeHtml(it.title)}" loading="lazy" decoding="async" />`
+        ? `<img src="${previewSrc}"${
+            // 图片预览链:缩略图→(缩略图坏)原图→(再坏)占位;onerror 链由 __mmImgErr 驱动
+            it.type === 'image' && it.thumb_url ? ` data-fb="${escapeHtml(it.file_url)}"` : ''
+          } onerror="window.__mmImgErr && window.__mmImgErr(this)" loading="lazy" decoding="async" />`
         : isMedia
           ? `<div class="text-slate-300 text-xs">无预览</div>`
           : `<div class="doc-icon ${meta.cls}"><i class="fa-solid ${meta.icon}"></i></div>`; // 无预览图的 PDF/Office 回退类型图标
