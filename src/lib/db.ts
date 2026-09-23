@@ -41,6 +41,7 @@ export interface ItemRow {
   mime: string | null;
   size: number | null;
   filename: string | null;
+  duration: number | null;
   sort_order: number;
 }
 
@@ -390,8 +391,8 @@ export async function createItem(
   await db
     .prepare(
       `INSERT INTO items
-       (id, org_id, menu_id, type, title, file_key, file_url, thumb_key, thumb_url, mime, size, filename, sort_order, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, org_id, menu_id, type, title, file_key, file_url, thumb_key, thumb_url, mime, size, filename, duration, sort_order, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
       id,
@@ -406,6 +407,7 @@ export async function createItem(
       it.mime,
       it.size,
       it.filename,
+      it.duration,
       sort,
       now(),
       now(),
@@ -418,7 +420,13 @@ export async function updateItem(
   db: D1Database,
   id: string,
   orgId: string,
-  patch: { title?: string; menu_id?: string; thumb_key?: string | null; thumb_url?: string | null },
+  patch: {
+    title?: string;
+    menu_id?: string;
+    thumb_key?: string | null;
+    thumb_url?: string | null;
+    duration?: number | null;
+  },
 ): Promise<void> {
   const fields: string[] = [];
   const vals: unknown[] = [];
@@ -437,6 +445,10 @@ export async function updateItem(
   if (patch.thumb_url !== undefined) {
     fields.push('thumb_url = ?');
     vals.push(patch.thumb_url);
+  }
+  if (patch.duration !== undefined) {
+    fields.push('duration = ?');
+    vals.push(patch.duration);
   }
   if (!fields.length) return;
   fields.push('updated_at = ?');

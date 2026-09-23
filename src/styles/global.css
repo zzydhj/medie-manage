@@ -642,7 +642,8 @@ body {
 .card-grid.compact .copy-btn i { font-size: 11px; }
 .card-grid.compact .copy-btn.share.solo { right: 35px; }
 .card-grid.compact .type-badge { font-size: 9px; padding: 1px 6px; top: 4px; left: 4px; }
-.card-grid.compact .play-badge i { font-size: 22px; }
+.card-grid.compact .play-badge i { width: 34px; height: 34px; font-size: 13px; padding-left: 3px; }
+.card-grid.compact .dur-pill { font-size: 9px; padding: 1px 5px; left: 5px; bottom: 5px; }
 .card-grid.compact .doc-icon { font-size: 26px; min-height: 0; }
 .card-grid.compact .card-actions { top: 4px; right: 4px; gap: 4px; }
 .card-grid.compact .card-fab { width: 22px; height: 22px; font-size: 11px; }
@@ -702,6 +703,12 @@ body {
   color: #fff;
   background: rgba(15, 23, 42, 0.6);
   backdrop-filter: blur(2px);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.type-badge i {
+  font-size: 9px;
 }
 /* 文档类型徽章配色(图片/视频用默认深色底) */
 .type-badge.t-pdf { background: #dc2626; }
@@ -720,6 +727,7 @@ body {
 .doc-icon.t-pdf { background: #fef2f2; color: #dc2626; }
 .doc-icon.t-word { background: #eff6ff; color: #2563eb; }
 .doc-icon.t-excel { background: #f0fdf4; color: #16a34a; }
+/* 播放钮:静态隐藏(零遮挡),悬停才浮现——实心深色圆+白三角+白描边,任何底色缩略图上都高对比 */
 .play-badge {
   position: absolute;
   inset: 0;
@@ -727,11 +735,44 @@ body {
   align-items: center;
   justify-content: center;
   pointer-events: none;
+  opacity: 0;
+  transform: scale(0.72);
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+.media-card:hover .play-badge {
+  opacity: 1;
+  transform: scale(1);
 }
 .play-badge i {
-  font-size: 34px;
-  color: rgba(255, 255, 255, 0.9);
-  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding-left: 4px; /* 三角光学居中 */
+  font-size: 20px;
+  color: #fff;
+  background: rgba(17, 24, 39, 0.78);
+  border: 2px solid rgba(255, 255, 255, 0.92);
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(2px);
+}
+/* 视频时长胶囊:左下角(右下角让给常驻下载/复制钮),黑底白字等宽数字 */
+.dur-pill {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  padding: 2px 7px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.78);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  z-index: 2;
 }
 /* 下载按钮:预览图右下角 */
 .download-btn {

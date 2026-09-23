@@ -20,6 +20,7 @@ interface ItemDTO {
   thumb_url: string | null;
   filename: string | null;
   size: number | null; // 批量上传去重用(与 filename 联合判重)
+  duration: number | null; // 视频时长(秒):卡片左下角时长胶囊
   sort_order: number;
 }
 interface Org {
@@ -73,6 +74,7 @@ let pendingUpload: {
   filename: string;
   thumbKey: string | null;
   thumbUrl: string | null;
+  duration: number | null;
 } | null = null;
 
 // 素材类型元信息:标签、Font Awesome 图标、配色 class、是否可在灯箱内在线预览
@@ -1205,6 +1207,8 @@ function renderGrid() {
     title: it.title,
     filename: it.filename || '',
     kind: it.type as PreviewItem['kind'],
+    id: it.id,
+    duration: it.duration,
   }));
   const pindexOf = new Map<string, number>();
   previewable.forEach((it, i) => pindexOf.set(it.id, i));
@@ -1273,8 +1277,19 @@ function renderGrid() {
           }" data-title="${escapeHtml(it.title)}">
             <span class="card-check"><i class="fa-solid fa-check"></i></span>
             ${thumbInner}
-            <span class="type-badge ${meta.cls}">${meta.label}</span>
-            ${it.type === 'video' ? `<span class="play-badge"><i class="fa-solid fa-circle-play"></i></span>` : ''}
+            ${
+              it.type !== 'image'
+                ? `<span class="type-badge ${meta.cls}"><i class="fa-solid ${
+                    it.type === 'video' ? 'fa-play' : meta.icon
+                  }"></i>${meta.label}</span>`
+                : '' // 图片是无标的默认态:网格更安静,视频/文档一眼跳出
+            }
+            ${it.type === 'video' ? `<span class="play-badge"><i class="fa-solid fa-play"></i></span>` : ''}
+            ${
+              it.type === 'video' && it.duration
+                ? `<span class="dur-pill">${fmtDuration(it.duration)}</span>`
+                : ''
+            }
             <button class="download-btn" data-act="download" data-url="${it.file_url}" data-name="${escapeHtml(
               it.filename || it.title,
             )}" title="下载"><i class="fa-solid fa-download"></i></button>
@@ -2065,6 +2080,8 @@ interface PreviewItem {
   title: string;
   filename?: string;
   kind: 'image' | 'video' | 'pdf' | 'word' | 'excel';
+  id?: string; // 灯箱惰性回填时长用
+  duration?: number | null;
 }
 let PREVIEW_LIST: PreviewItem[] = [];
 let previewIndex = 0;
@@ -2143,6 +2160,29 @@ function bindPreviewLoading(body: HTMLElement, item: PreviewItem) {
     if (!v) return;
     if (v.readyState >= 1) hide();
     v.addEventListener('loadeddata', hide, { once: true });
+    // 存量视频时长惰性回填:首次播放拿到 duration 后写回 DB + 列表缓存,卡片下次渲染即带胶囊
+    v.addEventListener(
+      'loadedmetadata',
+      () => {
+        const cur = PREVIEW_LIST[previewIndex];
+        if (!cur || cur.kind !== 'video' || !cur.id || cur.duration) return;
+        if (!isFinite(v.duration) || v.duration <= 0) return;
+        const d = Math.round(v.duration * 10) / 10;
+        cur.duration = d;
+        const row = ITEMS.find((x) => x.id === cur.id);
+        if (row && !row.duration) {
+          row.duration = d;
+          writeListCache();
+          renderGrid();
+          api(`/api/items/${cur.id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ duration: d }),
+          }).catch(() => {}); // 回填失败静默:下次播放再试
+        }
+      },
+      { once: true },
+    );
     v.addEventListener('canplay', hide);
     v.addEventListener('playing', hide);
     // 播放中卡顿(缓冲跟不上)时重新转出圈,恢复播放再隐去
@@ -2700,6 +2740,37 @@ function fmtBytes(n: number): string {
   return `${i === 0 ? Math.round(v) : v.toFixed(v >= 100 ? 0 : 1)} ${units[i]}`;
 }
 
+/** 时长胶囊文案:90s → 01:30,超一小时 → 1:05:00 */
+function fmtDuration(sec: number): string {
+  const s = Math.max(0, Math.round(sec));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const ss = String(s % 60).padStart(2, '0');
+  return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${ss}` : `${String(m).padStart(2, '0')}:${ss}`;
+}
+
+/** 读视频时长(秒):上传时随创建入库;失败/超时 resolve(null) 不阻断上传主流程 */
+function probeVideoDuration(file: File): Promise<number | null> {
+  return new Promise((resolve) => {
+    const video = document.createElement('video');
+    video.preload = 'metadata';
+    video.muted = true;
+    const objUrl = URL.createObjectURL(file);
+    video.src = objUrl;
+    let settled = false;
+    const done = (v: number | null) => {
+      if (settled) return;
+      settled = true;
+      URL.revokeObjectURL(objUrl);
+      resolve(v);
+    };
+    video.onloadedmetadata = () =>
+      done(isFinite(video.duration) && video.duration > 0 ? Math.round(video.duration * 10) / 10 : null);
+    video.onerror = () => done(null);
+    window.setTimeout(() => done(null), 8000); // 怪异编码元数据永不返回时的兑底
+  });
+}
+
 function generateVideoThumb(file: File): Promise<Blob | null> {
   return new Promise((resolve) => {
     const video = document.createElement('video');
@@ -2978,7 +3049,9 @@ async function handleFileChosen(file: File) {
     const type = main.type as ItemType; // 服务端权威判定:image/video/pdf/word/excel
     let thumbKey: string | null = null;
     let thumbUrl: string | null = null;
+    let duration: number | null = null;
     if (type === 'video') {
+      duration = await probeVideoDuration(work);
       status.textContent = '生成视频缩略图…';
       const blob = await generateVideoThumb(work);
       if (blob) {
@@ -3011,6 +3084,7 @@ async function handleFileChosen(file: File) {
       filename: main.filename,
       thumbKey,
       thumbUrl,
+      duration,
     };
     // 预览区:图片/视频直接展示,PDF 内嵌,Word/Excel 显示类型图标
     const meta = TYPE_META[type];
@@ -3053,6 +3127,7 @@ async function saveItem() {
         mime: pendingUpload.mime,
         size: pendingUpload.size,
         filename: pendingUpload.filename,
+        duration: pendingUpload.duration,
       }),
     });
     closeModal('item-modal');
@@ -3229,6 +3304,7 @@ async function batchUploadTask(files: File[], targetMenuId: string, queued: bool
       const type = main.type as ItemType; // 服务端权威判定
       let thumbKey: string | null = null;
       let thumbUrl: string | null = null;
+      const duration = type === 'video' ? await probeVideoDuration(work) : null;
       if (type === 'video' || type === 'image') {
         const blob =
           type === 'video' ? await generateVideoThumb(work) : await generateImageThumb(work);
@@ -3252,6 +3328,7 @@ async function batchUploadTask(files: File[], targetMenuId: string, queued: bool
           mime: main.mime,
           size: main.size,
           filename: main.filename,
+          duration,
         }),
       });
       r.state = 'done';

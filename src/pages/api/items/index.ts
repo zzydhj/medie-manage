@@ -38,6 +38,7 @@ export const POST: APIRoute = async (context) => {
     mime?: string | null;
     size?: number | null;
     filename?: string | null;
+    duration?: number | null;
   };
   try {
     body = await context.request.json();
@@ -68,6 +69,13 @@ export const POST: APIRoute = async (context) => {
     return err('文件不属于当前公司', 403);
   }
 
+  // 时长(秒):上传端浏览器提取;非法值归空,不阻断创建
+  const rawDur = Number(body.duration);
+  const duration =
+    body.duration != null && isFinite(rawDur) && rawDur > 0 && rawDur <= 86400
+      ? Math.round(rawDur * 10) / 10
+      : null;
+
   const id = await createItem(env.DB, {
     orgId,
     menu_id: menuId,
@@ -80,6 +88,7 @@ export const POST: APIRoute = async (context) => {
     mime: body.mime ?? null,
     size: body.size ?? null,
     filename: body.filename ?? null,
+    duration,
   });
 
   return json({ item: { id } }, 201);

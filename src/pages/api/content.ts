@@ -72,6 +72,7 @@ interface ItemRow {
   thumb_url: string | null;
   filename: string | null;
   size: number | null;
+  duration: number | null;
   sort_order: number;
 }
 
@@ -146,7 +147,7 @@ export const GET: APIRoute = async (context) => {
   const total = totalRow?.c ?? 0;
   const { results } = await env.DB
     .prepare(
-      `SELECT id, menu_id, type, title, file_url, thumb_url, filename, size, sort_order FROM items WHERE ${whereSql} ORDER BY sort_order ASC, created_at ASC LIMIT ? OFFSET ?`,
+      `SELECT id, menu_id, type, title, file_url, thumb_url, filename, size, duration, sort_order FROM items WHERE ${whereSql} ORDER BY sort_order ASC, created_at ASC LIMIT ? OFFSET ?`,
     )
     .bind(...params, pageSize, (page - 1) * pageSize)
     .all<ItemRow>();
@@ -169,6 +170,7 @@ export const GET: APIRoute = async (context) => {
       thumb_url: it.thumb_url,
       filename: it.filename,
       size: it.size, // 批量上传去重用:同一公司内「文件名 + 大小」相同即视为重复
+      duration: it.duration, // 视频时长(秒):卡片左下角时长胶囊
       sort_order: it.sort_order,
     })),
   });
