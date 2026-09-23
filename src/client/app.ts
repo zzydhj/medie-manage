@@ -706,8 +706,15 @@ async function refreshList() {
   deepSeq++; // 取消上一轮深度预载
   const painted = paintStaleList(); // 上次窗口立即秒开
   if (!painted) {
+    // 无旧缓存(如首次点筛选 chip):立即清空窗口态再铺骨架屏。
+    // 否则 ITEMS/HAS_MORE/PAGE 还是旧视图的,骨架屏变矮会触发 scroll→loadMore,
+    // 把新筛选的下一页 append 进旧列表 → 图片筛选里混进视频、内容跳动;
+    // 清空后 HAS_MORE=false,loadMore 直接短路,新数据到达前网格只有骨架屏
+    ITEMS = [];
+    TOTAL = 0;
+    HAS_MORE = false;
     PAGE = 1;
-    if (!pageCache.has(pageCacheKey(1))) renderSkeleton();
+    renderSkeleton(); // 旧内容一律先换成骨架屏:新数据到达前绝不展示与筛选不符的卡片
   }
   // 有旧窗口时并行补到同等规模,替换一次到位;没有则只拉第一页
   const want = painted ? Math.min(10, Math.max(1, Math.ceil(ITEMS.length / PAGE_SIZE))) : 1;
