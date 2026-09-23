@@ -1024,6 +1024,59 @@ body {
 @keyframes lb-zoom-in { from { opacity: 0; transform: scale(0.96); } to { opacity: 1; transform: none; } }
 @keyframes lb-slide-next { from { opacity: 0; transform: translateX(48px); } to { opacity: 1; transform: none; } }
 @keyframes lb-slide-prev { from { opacity: 0; transform: translateX(-48px); } to { opacity: 1; transform: none; } }
+/* 预览加载动效:全屏居中 spinner + 文案(图片/视频/PDF 通用),
+   加载完成淡出;失败转 error 态(感叹号 + 重试按钮) */
+.lb-loading {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  z-index: 305;
+  /* 不拦点击:加载中也允许点两侧箭头切换/点遮罩关闭 */
+  pointer-events: none;
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 13px;
+  font-weight: 500;
+  transition: opacity 0.2s;
+}
+.lb-loading.lb-loading-done {
+  opacity: 0;
+}
+.lb-spinner {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 3px solid rgba(255, 255, 255, 0.16);
+  border-top-color: #60a5fa;
+  animation: lb-spin 0.8s linear infinite;
+}
+@keyframes lb-spin { to { transform: rotate(360deg); } }
+.lb-loading.error {
+  pointer-events: auto;
+  gap: 10px;
+}
+.lb-loading.error i {
+  font-size: 26px;
+  color: #f87171;
+}
+.lb-retry-btn {
+  margin-top: 4px;
+  padding: 7px 18px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.lb-retry-btn:hover {
+  background: rgba(255, 255, 255, 0.22);
+}
 /* PDF 内嵌预览(灯箱内用浏览器自带阅读器渲染) */
 .lb-doc {
   width: 90vw;

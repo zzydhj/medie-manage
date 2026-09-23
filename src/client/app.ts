@@ -1952,6 +1952,7 @@ function renderPreview() {
         : item.kind === 'pdf'
           ? `<iframe class="lb-doc" src="${item.src}" title="${escapeHtml(item.title)}"></iframe>`
           : `<img src="${item.src}" alt="${escapeHtml(item.title)}" />`;
+    bindPreviewLoading(body, item);
   }
   if (title) {
     title.textContent =
@@ -1967,6 +1968,61 @@ function renderPreview() {
   const next = $('#lb-next');
   if (prev) prev.hidden = !multi;
   if (next) next.hidden = !multi;
+}
+
+/** 预览加载动效:大图/大视频加载耗时长,无反馈时用户会以为坏了对退出。
+ *  全屏居中 spinner + 文案;视频额外报缓冲百分比、播放卡顿(waiting)时重新显示;
+ *  失败转可重试的错误态。Office 预览自带占位,不走这里 */
+function bindPreviewLoading(body: HTMLElement, item: PreviewItem) {
+  const lb = $('#lightbox');
+  lb?.querySelector('.lb-loading')?.remove();
+  const overlay = document.createElement('div');
+  overlay.className = 'lb-loading';
+  overlay.innerHTML = '<span class="lb-spinner"></span><span class="lb-loading-text">正在加载…</span>';
+  lb?.appendChild(overlay);
+  const text = overlay.querySelector('.lb-loading-text') as HTMLElement;
+  const hide = () => overlay.classList.add('lb-loading-done');
+  const show = (t: string) => {
+    text.textContent = t;
+    overlay.classList.remove('lb-loading-done');
+  };
+  const fail = () => {
+    overlay.classList.remove('lb-loading-done');
+    overlay.classList.add('error');
+    overlay.innerHTML =
+      '<i class="fa-solid fa-triangle-exclamation"></i><span class="lb-loading-text">加载失败,请检查网络</span><button class="lb-retry-btn" data-act="lb-retry">重试</button>';
+  };
+  if (item.kind === 'image') {
+    const img = body.querySelector('img');
+    if (!img) return;
+    if (img.complete && img.naturalWidth > 0) hide();
+    else {
+      img.addEventListener('load', hide, { once: true });
+      img.addEventListener('error', fail, { once: true });
+    }
+  } else if (item.kind === 'video') {
+    const v = body.querySelector('video');
+    if (!v) return;
+    if (v.readyState >= 1) hide();
+    v.addEventListener('loadeddata', hide, { once: true });
+    v.addEventListener('canplay', hide);
+    v.addEventListener('playing', hide);
+    // 播放中卡顿(缓冲跟不上)时重新转出圈,恢复播放再隐去
+    v.addEventListener('waiting', () => show('缓冲中…'));
+    v.addEventListener('progress', () => {
+      if (overlay.classList.contains('lb-loading-done') || overlay.classList.contains('error')) return;
+      const buf = v.buffered;
+      if (v.duration && buf.length) {
+        const p = Math.min(99, Math.floor((buf.end(buf.length - 1) / v.duration) * 100));
+        if (p > 0) text.textContent = `缓冲中 ${p}%`;
+      }
+    });
+    v.addEventListener('error', fail, { once: true });
+  } else if (item.kind === 'pdf') {
+    const f = body.querySelector('iframe');
+    if (!f) return;
+    f.addEventListener('load', hide, { once: true });
+  }
 }
 
 // Office 文档客户端解析:动态 import 本地打包的库(同源、不依赖 CDN),
@@ -2047,6 +2103,7 @@ function closeLightbox() {
   closeModal('lightbox');
   const body = $('#lightbox-body');
   if (body) body.innerHTML = ''; // 清空以停止视频播放
+  $('#lightbox')?.querySelector('.lb-loading')?.remove();
 }
 
 function initLightbox() {
@@ -2074,7 +2131,13 @@ function initLightbox() {
       return;
     }
     // 点在媒体/Office 面板/按钮上不关闭
-    if (target.closest('img, video, iframe, button, .lb-office')) return;
+    // 加载失败的重试按钮:重建当前预览触发重新拉流
+    if (target.closest('[data-act="lb-retry"]')) {
+      e.stopPropagation();
+      renderPreview();
+      return;
+    }
+    if (target.closest('img, video, iframe, button, .lb-office, .lb-loading')) return;
     closeLightbox();
   });
   // 键盘:← → 切换,Esc 关闭
