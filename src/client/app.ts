@@ -108,7 +108,11 @@ async function api<T = any>(path: string, opts: RequestInit = {}): Promise<T> {
     headers: orgHeaders(opts.headers as Record<string, string>),
   });
   const data: any = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error((data && data.error) || `请求失败(${res.status})`);
+  if (!res.ok) {
+    // 超管中途设置到期:在线收到 403 到期错误立即锁屏(不等下次刷新)
+    if (res.status === 403 && data?.error === '会员已到期,请续费后使用') enterLockMode();
+    throw new Error((data && data.error) || `请求失败(${res.status})`);
+  }
   return data as T;
 }
 
@@ -137,6 +141,44 @@ function expiryGuard(): boolean {
   if (!ME?.orgExpired) return false;
   openModal('expiry-modal');
   return true;
+}
+
+// ---------------- 会员到期锁屏(浏览也禁:服务端对到期公司拒发任何数据) ----------------
+let locked = false;
+/** 锁屏:全屏遮罩盖住整站(只剩退出登录),禁右键/拖拽/保存类快捷键并弹续费大弹窗。
+ *  真正的墙在服务端:/api 全 403(含文件字节),浏览器拿不到数据,插件也无从保存 */
+function enterLockMode() {
+  if (locked) {
+    openModal('expiry-modal');
+    return;
+  }
+  locked = true;
+  $('#lock-screen')?.classList.remove('hidden');
+  $('#lock-logout')?.addEventListener('click', doLogout);
+  openModal('expiry-modal');
+  // 全局右键:禁默认菜单并弹续费弹窗,到期账号的「另存为」入口彻底掐掉
+  document.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    openModal('expiry-modal');
+  });
+  // 拖图片/文本到桌面等同保存,一并禁止
+  document.addEventListener('dragstart', (e) => e.preventDefault());
+  // 保存/打印/看源码/开发者工具类快捷键
+  document.addEventListener(
+    'keydown',
+    (e) => {
+      const k = e.key.toLowerCase();
+      const blocked =
+        e.key === 'F12' ||
+        (e.ctrlKey && !e.altKey && (k === 's' || k === 'p' || k === 'u')) ||
+        (e.ctrlKey && e.shiftKey && (k === 'i' || k === 'j' || k === 'c'));
+      if (blocked) {
+        e.preventDefault();
+        openModal('expiry-modal');
+      }
+    },
+    true,
+  );
 }
 document.addEventListener('click', (e) => {
   const t = e.target as HTMLElement;
@@ -236,6 +278,11 @@ async function init() {
     ensureFill();
   });
 
+  // 会员到期:直接锁屏(不加载任何内容,服务端也已拒发),弹续费大弹窗
+  if (ME.orgExpired) {
+    enterLockMode();
+    return;
+  }
   await loadContent();
 }
 
@@ -753,6 +800,7 @@ function renderSkeleton() {
 
 // ---------------- 加载内容 ----------------
 async function loadContent() {
+  if (ME?.orgExpired) return; // 锁屏态:任何内容都不请求(服务端对到期公司全 403)
   clearPageCache(); // 任何结构性变更后旧页缓存作废
   if (!activeOrgId) {
     MENUS = [];

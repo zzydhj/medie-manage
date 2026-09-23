@@ -307,6 +307,15 @@ if (!user) {
     </div>
   </div>
 
+  <!-- ===== 会员到期锁屏:全屏遮罩盖住整站(仅留退出登录);右键/拖拽/保存快捷键全禁并弹续费弹窗 ===== -->
+  <div id="lock-screen" class="lock-screen hidden">
+    <i class="fa-solid fa-crown lock-icon"></i>
+    <div class="lock-title">会员到期</div>
+    <div class="lock-text">续费后使用</div>
+    <div class="lock-sub">素材浏览与所有功能已停用,请联系管理员续费</div>
+    <button id="lock-logout" class="btn btn-ghost lock-logout" type="button">退出登录</button>
+  </div>
+
   <!-- ===== 会员到期续费提示大弹窗(到期公司账号点任何功能时弹) ===== -->
   <div id="expiry-modal" class="modal-mask">
     <div class="modal-box expiry-modal-box">

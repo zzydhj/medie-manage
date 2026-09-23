@@ -57,9 +57,14 @@ export const onRequest = defineMiddleware(async (context, next) => {
     return context.redirect('/');
   }
 
-  // 到期公司兜底:写请求(POST/PATCH/PUT/DELETE)一律 403 统一续费文案;
-  // GET 放行保证「能登录、能浏览」;客户端 expiryGuard 点功能时先弹大弹窗,正常走不到这里
-  if (expiredOrg && isApi && !['GET', 'HEAD', 'OPTIONS'].includes(request.method)) {
+  // 到期公司兜底:拒发任何数据——/api 全部 403(仅保留 me/登录/登出),
+  // 含 /api/file 文件字节:浏览器拿不到数据,右键另存/插件抓包都无从保存;
+  // 客户端锁屏+续费大弹窗先拦交互,正常走不到这里
+  const allowList =
+    url.pathname === '/api/me' ||
+    url.pathname === '/api/auth/login' ||
+    url.pathname === '/api/auth/logout';
+  if (expiredOrg && isApi && !allowList) {
     return new Response(JSON.stringify({ error: '会员已到期,请续费后使用' }), {
       status: 403,
       headers: { 'content-type': 'application/json' },
