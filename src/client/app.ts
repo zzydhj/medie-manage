@@ -26,6 +26,7 @@ interface Org {
   id: string;
   name: string;
   slug: string;
+  expires_at: number | null;
 }
 interface Me {
   user: { id: string; username: string; role: string; orgId: string | null; gridCols: number | null };
@@ -163,16 +164,19 @@ async function init() {
       sel.innerHTML = ME.orgs
         .map((o) => `<option value="${o.id}" ${o.id === activeOrgId ? 'selected' : ''}>${escapeHtml(o.name)}</option>`)
         .join('');
-      sel.classList.remove('hidden');
+      $('#org-switch-wrap')?.classList.remove('hidden');
       sel.addEventListener('change', () => {
         activeOrgId = sel.value;
         selectedMenuId = null;
         resetSearch();
+        updateExpiryChip();
         loadContent();
       });
     }
     $('#btn-companies')?.classList.remove('hidden');
   }
+  initOrgExpiryPicker();
+  updateExpiryChip();
 
   // 非超管:左上角显示静态公司名(与超管切换器同款白胶囊,只显自己公司、不可切)
   if (!isSuper) {
@@ -259,13 +263,14 @@ function relocateForViewport() {
       header.insertBefore(sc, $('#cols-control'));
     }
   }
+  // 切换器 + 到期 chip 整体搬动:手机端超管也能在账户 sheet 里设到期日
   const slot = $('#account-org-field');
-  const sel = $('#org-switcher');
-  if (header && slot && sel) {
+  const selWrap = $('#org-switch-wrap');
+  if (header && slot && selWrap) {
     if (isMobileViewport()) {
-      if (sel.parentElement !== slot) slot.appendChild(sel);
-    } else if (sel.parentElement !== header) {
-      header.insertBefore(sel, header.querySelector('.spacer'));
+      if (selWrap.parentElement !== slot) slot.appendChild(selWrap);
+    } else if (selWrap.parentElement !== header) {
+      header.insertBefore(selWrap, header.querySelector('.spacer'));
     }
   }
 }
@@ -3232,6 +3237,7 @@ async function refreshOrgList() {
       selectedMenuId = null;
       const sel = $('#org-switcher') as HTMLSelectElement;
       if (sel) sel.value = activeOrgId;
+      updateExpiryChip();
       closeModal('org-modal');
       await loadContent();
     }),
@@ -3249,6 +3255,69 @@ async function refreshOrgSwitcher() {
     activeOrgId = orgs[0].id;
     sel.value = activeOrgId;
   }
+  if (ME) ME.orgs = orgs; // 同步到期字段,chip 读最新值
+  updateExpiryChip();
+}
+
+// ---------------- 会员到期(超管按公司设置) ----------------
+/** 到期 chip:超管切换器右侧;点击弹日期选择器设置/清除当前公司到期日,
+ *  到期后该公司账号(管理员+普通用户)登录被拒并提示续费 */
+function fmtExpiryDate(sec: number): string {
+  const d = new Date(sec * 1000);
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+function currentOrgExpiry(): number | null {
+  return ME?.orgs?.find((o) => o.id === activeOrgId)?.expires_at ?? null;
+}
+function updateExpiryChip() {
+  const chip = $('#org-expiry-chip');
+  if (!chip || !isSuper) return;
+  const exp = currentOrgExpiry();
+  chip.innerHTML = exp
+    ? `<i class="fa-solid fa-calendar-check"></i> 到期 ${fmtExpiryDate(exp)}`
+    : `<i class="fa-solid fa-infinity"></i> 永久有效`;
+  chip.classList.toggle('expired', !!exp && exp < Math.floor(Date.now() / 1000));
+}
+function initOrgExpiryPicker() {
+  const chip = $('#org-expiry-chip');
+  const input = $('#org-expiry-input') as HTMLInputElement | null;
+  if (!chip || !input) return;
+  chip.addEventListener('click', () => {
+    const exp = currentOrgExpiry();
+    input.value = exp ? fmtExpiryDate(exp) : '';
+    const picker = input as HTMLInputElement & { showPicker?: () => void };
+    if (typeof picker.showPicker === 'function') {
+      try {
+        picker.showPicker();
+        return;
+      } catch {
+        /* 落到内联展示 */
+      }
+    }
+    // 不支持 showPicker 的浏览器:输入框内联展示手动选
+    input.classList.add('expiry-input-inline');
+    input.focus();
+  });
+  input.addEventListener('change', async () => {
+    const v = input.value; // 'YYYY-MM-DD';空值 = 清除(永久有效)
+    const expiresAt = v ? Math.floor(new Date(`${v}T23:59:59`).getTime() / 1000) : null;
+    if (!activeOrgId) return;
+    try {
+      await api(`/api/orgs/${activeOrgId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ expiresAt }),
+      });
+      const o = ME?.orgs?.find((x) => x.id === activeOrgId);
+      if (o) o.expires_at = expiresAt;
+      toast(expiresAt ? `已设置到期:${v} 当日末` : '已清除到期,永久有效');
+      updateExpiryChip();
+    } catch (e) {
+      toast((e as Error).message, true);
+    }
+    input.classList.remove('expiry-input-inline');
+  });
 }
 
 // ---------------- 用户管理 ----------------

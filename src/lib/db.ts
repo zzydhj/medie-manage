@@ -6,6 +6,7 @@ export interface Organization {
   name: string;
   slug: string;
   created_at: number;
+  expires_at: number | null; // 会员到期(秒级 unix,当日末);NULL = 永久有效
 }
 
 export interface UserRow {
@@ -56,16 +57,29 @@ export function now(): number {
 
 export async function listOrgs(db: D1Database): Promise<Organization[]> {
   const { results } = await db
-    .prepare('SELECT id, name, slug, created_at FROM organizations ORDER BY created_at ASC')
+    .prepare('SELECT id, name, slug, created_at, expires_at FROM organizations ORDER BY created_at ASC')
     .all<Organization>();
   return results ?? [];
 }
 
 export async function getOrg(db: D1Database, id: string): Promise<Organization | null> {
   return db
-    .prepare('SELECT id, name, slug, created_at FROM organizations WHERE id = ?')
+    .prepare('SELECT id, name, slug, created_at, expires_at FROM organizations WHERE id = ?')
     .bind(id)
     .first<Organization>();
+}
+
+/** 会员到期判定:now 超过 expires_at 即到期;NULL/0 = 永久有效 */
+export function orgExpired(expiresAt: number | null | undefined): boolean {
+  return typeof expiresAt === 'number' && expiresAt > 0 && now() > expiresAt;
+}
+
+export async function setOrgExpiry(
+  db: D1Database,
+  id: string,
+  expiresAt: number | null,
+): Promise<void> {
+  await db.prepare('UPDATE organizations SET expires_at = ? WHERE id = ?').bind(expiresAt, id).run();
 }
 
 export interface OrgStorage {
@@ -104,7 +118,7 @@ export async function createOrg(
     .prepare('INSERT INTO organizations (id, name, slug, created_at) VALUES (?, ?, ?, ?)')
     .bind(id, name, slug, now())
     .run();
-  return { id, name, slug, created_at: now() };
+  return { id, name, slug, created_at: now(), expires_at: null };
 }
 
 export async function deleteOrg(db: D1Database, id: string): Promise<void> {

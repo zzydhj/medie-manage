@@ -117,6 +117,60 @@ body {
   padding: 3px 8px;
   font-size: 11px;
 }
+/* 公司切换器 + 到期 chip 容器(窄屏整体搬进账户 sheet) */
+.org-switch-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.org-switch-wrap.hidden {
+  display: none;
+}
+/* 会员到期 chip:蓝顶栏上半透明白胶囊;已到期红底警示 */
+.expiry-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.16);
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s;
+}
+.expiry-chip:hover {
+  background: rgba(255, 255, 255, 0.28);
+}
+.expiry-chip.expired {
+  background: rgba(239, 68, 68, 0.4);
+  border-color: rgba(248, 113, 113, 0.9);
+}
+/* 白底容器(账户 sheet)内换浅蓝字色 */
+.account-field .expiry-chip {
+  color: #1e3a8a;
+  background: #eef4ff;
+  border-color: #c9dcfc;
+}
+/* 日期选择输入:默认屏外隐藏(showPicker 要求元素已渲染),
+   不支持 showPicker 的浏览器回退内联展示 */
+.expiry-input-offscreen {
+  position: fixed;
+  left: -9999px;
+  top: 0;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+.expiry-input-offscreen.expiry-input-inline {
+  position: static;
+  width: auto;
+  height: auto;
+  opacity: 1;
+}
 /* 顶栏“每行列数”自定义下拉控件(深色面板,与顶栏风格统一) */
 /* 搜索框:顶栏半透明胶囊,与列数控件风格一致 */
 .search-control {
