@@ -221,6 +221,10 @@ async function init() {
       sel.addEventListener('change', () => {
         activeOrgId = sel.value;
         selectedMenuId = null;
+        // 切公司同样回「全部」筛选,与切菜单行为一致
+        typeFilter = '';
+        syncTypeFilterUI();
+        saveView();
         resetSearch();
         updateExpiryChip();
         loadContent();
@@ -1209,6 +1213,9 @@ function bindMenuTree() {
       // 收藏虚拟节点:进入收藏视图(跨菜单、个人)
       if (row.dataset.fav) {
         favView = true;
+        // 切视图默认回「全部」筛选:不带着上一个分组的图片/视频/文档过滤进新视图
+        typeFilter = '';
+        syncTypeFilterUI();
         saveView();
         resetSearch();
         document.querySelectorAll('.menu-row.active').forEach((r) => r.classList.remove('active'));
@@ -1245,6 +1252,9 @@ function bindMenuTree() {
       });
       selectedMenuId = id;
       favView = false;
+      // 切菜单默认回「全部」筛选:不带着上一个分组的图片/视频/文档过滤进新菜单
+      typeFilter = '';
+      syncTypeFilterUI();
       saveView();
       resetSearch();
       document.querySelectorAll('.menu-row.active').forEach((r) => r.classList.remove('active'));
