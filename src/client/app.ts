@@ -661,9 +661,12 @@ function patchFavCaches(id: string, on: boolean, it: ItemDTO | null) {
   } catch {
     // 配额满/隐私模式:忽略,点进收藏走网络
   }
-  // 内存页缓存里所有收藏视图的页(含类型筛选变体、含后台引擎铺的首屏)作废
-  pageCache.forEach((_, k) => {
+  // 内存页缓存:收藏视图的页 items 变了→作废;其余视图 items 没变、但内嵌的 favorites 旧了→
+  // 用最新 FAVORITES 盖章。否则切回该分组时 fetchWindow 读到旧 favorites 覆盖 FAVORITES,
+  // 已收藏的素材星标显示成未收藏(用户反馈的问题)
+  pageCache.forEach((d, k) => {
     if (/\|fav\|\d+$/.test(k)) pageCache.delete(k);
+    else d.favorites = [...FAVORITES];
   });
 }
 /** 用上次落的列表立即渲染(刷新秒开);返回是否命中 */
