@@ -2363,15 +2363,47 @@ function uploadFile(
   onProgress?: (loaded: number, total: number) => void,
 ): Promise<any> {
   if (file.size > CHUNK_THRESHOLD) return uploadFileChunked(file, kind, onProgress);
+  // 连接停滞/网络中断自动重试一次:服务端是纯 R2 写入无副作用,重传安全
+  return uploadFileOnce(file, kind, onProgress).catch((e) => {
+    if (!isRetryableUploadError(e)) throw e;
+    return uploadFileOnce(file, kind, onProgress);
+  });
+}
+
+/** 停滞看门狗阈值:60s 无进度事件且无响应即认定连接已静默死亡。
+ * XHR 默认无超时:字节发完后连接死掉(响应丢失/边缘挂起)时 onload/onerror 都不触发,
+ * Promise 永不 settle → 批量行卡 100%、后续队列永久停摆 */
+const UPLOAD_STALL_MS = 60_000;
+function isRetryableUploadError(e: unknown): boolean {
+  return /无响应|网络中断/.test((e as Error)?.message || '');
+}
+
+function uploadFileOnce(
+  file: File,
+  kind: 'main' | 'thumb',
+  onProgress?: (loaded: number, total: number) => void,
+): Promise<any> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open('POST', '/api/upload');
     // 上传需要带 org 头
     Object.entries(orgHeaders()).forEach(([k, v]) => xhr.setRequestHeader(k, v));
+    let lastAct = Date.now();
+    let stalled = false;
+    const watchdog = setInterval(() => {
+      if (Date.now() - lastAct > UPLOAD_STALL_MS) {
+        stalled = true;
+        clearInterval(watchdog);
+        xhr.abort();
+      }
+    }, 5_000);
+    const settle = () => clearInterval(watchdog);
     xhr.upload.onprogress = (e) => {
+      lastAct = Date.now();
       if (e.lengthComputable && onProgress) onProgress(e.loaded, e.total);
     };
     xhr.onload = () => {
+      settle();
       let data: any = {};
       try {
         data = JSON.parse(xhr.responseText || '{}');
@@ -2381,8 +2413,14 @@ function uploadFile(
       if (xhr.status >= 200 && xhr.status < 300) resolve(data);
       else reject(new Error(data.error || `上传失败(HTTP ${xhr.status})`));
     };
-    xhr.onerror = () => reject(new Error('网络中断:上传失败,请检查网络后重试'));
-    xhr.onabort = () => reject(new Error('上传已取消'));
+    xhr.onerror = () => {
+      settle();
+      reject(new Error('网络中断:上传失败,请检查网络后重试'));
+    };
+    xhr.onabort = () => {
+      settle();
+      reject(new Error(stalled ? '连接无响应(60s 无进度),已中断' : '上传已取消'));
+    };
     const fd = new FormData();
     fd.append('file', file);
     fd.append('kind', kind);
@@ -2407,10 +2445,21 @@ function uploadChunk(
     const xhr = new XMLHttpRequest();
     xhr.open('POST', url);
     Object.entries(orgHeaders()).forEach(([k, v]) => xhr.setRequestHeader(k, v));
+    let lastAct = Date.now();
+    let stalled = false;
+    const watchdog = setInterval(() => {
+      if (Date.now() - lastAct > UPLOAD_STALL_MS) {
+        stalled = true;
+        clearInterval(watchdog);
+        xhr.abort();
+      }
+    }, 5_000);
     xhr.upload.onprogress = (e) => {
+      lastAct = Date.now();
       if (e.lengthComputable && onProgress) onProgress(e.loaded);
     };
     xhr.onload = () => {
+      clearInterval(watchdog);
       if (xhr.status >= 200 && xhr.status < 300) {
         try {
           resolve(JSON.parse(xhr.responseText));
@@ -2427,9 +2476,28 @@ function uploadChunk(
       }
       reject(new Error(msg));
     };
-    xhr.onerror = () => reject(new Error('网络中断'));
+    xhr.onerror = () => {
+      clearInterval(watchdog);
+      reject(new Error('网络中断'));
+    };
+    // 停滞 abort 走这里:调用方的重试循环会同 partNumber 再传一次
+    xhr.onabort = () => {
+      clearInterval(watchdog);
+      reject(new Error(stalled ? '分片连接无响应,已中断' : '分片上传已取消'));
+    };
     xhr.send(blob);
   });
+}
+
+/** 分片控制面请求(init/complete)加超时上限:fetch 默认无超时,
+ * 边缘挂起时会拖住整个批次;超时转可读懂的文案 */
+async function apiT<T = any>(url: string, opts: RequestInit = {}, ms = 90_000): Promise<T> {
+  try {
+    return await api<T>(url, { ...opts, signal: AbortSignal.timeout(ms) });
+  } catch (e) {
+    if ((e as Error)?.name === 'TimeoutError') throw new Error('服务器响应超时,请重试');
+    throw e;
+  }
 }
 
 async function uploadFileChunked(
@@ -2438,7 +2506,7 @@ async function uploadFileChunked(
   onProgress?: (loaded: number, total: number) => void,
 ): Promise<any> {
   const mime = file.type || 'application/octet-stream';
-  const init = await api<{ key: string; uploadId: string }>('/api/upload/mp?step=init', {
+  const init = await apiT<{ key: string; uploadId: string }>('/api/upload/mp?step=init', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name: file.name, size: file.size, mime, kind }),
@@ -2470,14 +2538,14 @@ async function uploadFileChunked(
       done += blob.size;
       onProgress?.(done, total);
     }
-    return await api(`/api/upload/mp?step=complete&${qs}`, {
+    return await apiT(`/api/upload/mp?step=complete&${qs}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ parts, name: file.name, mime }),
     });
   } catch (e) {
     // 失败时 best-effort 清理远端分片,不留垃圾 multipart 会话
-    api(`/api/upload/mp?step=abort&${qs}`, { method: 'POST' }).catch(() => {});
+    apiT(`/api/upload/mp?step=abort&${qs}`, { method: 'POST' }, 30_000).catch(() => {});
     throw e;
   }
 }
@@ -2760,7 +2828,10 @@ async function handleFileChosen(file: File) {
     const compressed = await compressImageIfNeeded(work, (s) => (status.textContent = s));
     work = compressed.file;
     const main = await uploadFile(work, 'main', (loaded, total) => {
-      status.textContent = `上传中 ${Math.round((loaded / total) * 100)}%(${fmtMb(loaded)}/${fmtMb(total)})`;
+      status.textContent =
+        loaded >= total
+          ? '上传完成,服务器写入中…'
+          : `上传中 ${Math.round((loaded / total) * 100)}%(${fmtMb(loaded)}/${fmtMb(total)})`;
     });
     const type = main.type as ItemType; // 服务端权威判定:image/video/pdf/word/excel
     let thumbKey: string | null = null;
@@ -2967,7 +3038,13 @@ async function batchUploadTask(files: File[], targetMenuId: string, queued: bool
     if (!rowEl) return;
     const el = rowEl.querySelector('.batch-row-state') as HTMLElement | null;
     if (el) {
-      el.textContent = pct !== undefined ? `${pct}%` : stateText(r);
+      // 100% 但未落定 = 服务端还在写入/建缩略图:改文案,避免"卡死在 100%"的误判
+      el.textContent =
+        pct !== undefined
+          ? pct >= 100 && r.state === 'uploading'
+            ? '写入中…'
+            : `${pct}%`
+          : stateText(r);
       el.className = `batch-row-state ${r.state}`;
     }
     const bar = rowEl.querySelector('[data-bar]') as HTMLElement | null;
