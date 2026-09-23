@@ -71,6 +71,52 @@ body {
   cursor: pointer;
   max-width: 200px;
 }
+/* 静态公司名(非超管):复用白胶囊样式但只读无下拉;长名省略号 */
+.org-name-static {
+  display: inline-block;
+  cursor: default;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+/* 与 .header-btn 同款优先级修正:单类 display 会被后加载的同单类 .hidden 覆盖,
+   需双类选择器明确恢复隐藏态 */
+.org-name-static.hidden {
+  display: none;
+}
+/* VIP 角标:金渐变 + 皇冠 + 呼吸光;蓝渐变顶栏上金色是最跳的互补色,
+   置左侧身份区(公司名旁),传达 已付费开通 的产品感 */
+.vip-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #ffe29f 0%, #ffb84d 55%, #ff9a3d 100%);
+  color: #6b3f00;
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 1px;
+  flex-shrink: 0;
+  animation: vip-glow 2.4s ease-in-out infinite;
+}
+.vip-badge i {
+  font-size: 11px;
+}
+@keyframes vip-glow {
+  0%,
+  100% {
+    box-shadow: 0 0 0 1px rgba(255, 214, 130, 0.7), 0 2px 10px rgba(255, 154, 61, 0.45);
+  }
+  50% {
+    box-shadow: 0 0 0 1px rgba(255, 230, 170, 0.95), 0 2px 16px rgba(255, 170, 70, 0.75);
+  }
+}
+.vip-badge-sm {
+  padding: 3px 8px;
+  font-size: 11px;
+}
 /* 顶栏“每行列数”自定义下拉控件(深色面板,与顶栏风格统一) */
 /* 搜索框:顶栏半透明胶囊,与列数控件风格一致 */
 .search-control {

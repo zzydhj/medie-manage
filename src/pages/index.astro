@@ -18,6 +18,10 @@ if (!user) {
 
     <!-- 公司切换器:仅超级管理员可见(客户端根据 /api/me 填充) -->
     <select id="org-switcher" class="org-select hidden" title="切换公司"></select>
+    <!-- 非超管:静态公司名(与超管切换器同款白胶囊,只读不可切) -->
+    <span id="org-name-badge" class="org-select org-name-static hidden"></span>
+    <!-- VIP 角标:金渐变+皇冠+呼吸光,置左侧身份区,传达付费开通感 -->
+    <span class="vip-badge" title="VIP 已开通"><i class="fa-solid fa-crown"></i>VIP</span>
 
     <div class="spacer"></div>
 
@@ -143,6 +147,8 @@ if (!user) {
         <div id="account-name" class="account-name">—</div>
         <div id="account-role" class="account-role"></div>
       </div>
+      <!-- 手机端顶栏隐藏,VIP 角标在账户 sheet 头部补一个落点 -->
+      <span class="vip-badge vip-badge-sm" title="VIP 已开通"><i class="fa-solid fa-crown"></i>VIP</span>
       <button class="mini-btn" id="account-close" type="button" title="关闭">
         <i class="fa-solid fa-xmark"></i>
       </button>

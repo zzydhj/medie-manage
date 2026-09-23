@@ -173,6 +173,16 @@ async function init() {
     }
     $('#btn-companies')?.classList.remove('hidden');
   }
+
+  // 非超管:左上角显示静态公司名(与超管切换器同款白胶囊,只显自己公司、不可切)
+  if (!isSuper) {
+    const badge = $('#org-name-badge');
+    const orgName = ME.org?.name ?? ME.orgs?.find((o) => o.id === activeOrgId)?.name ?? '';
+    if (badge && orgName) {
+      badge.textContent = orgName;
+      badge.classList.remove('hidden');
+    }
+  }
   // 用户管理入口:超级管理员 + 公司管理员
   if (isAdmin) $('#btn-users')?.classList.remove('hidden');
   // 补缩略图:管理员一次性运维操作
