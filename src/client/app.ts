@@ -1235,7 +1235,9 @@ function renderGrid() {
           ? it.thumb_url || ''
           : it.type === 'image'
             ? it.thumb_url || it.file_url // 卡片挂缩略图;老素材没缩略图时回退原图
-            : '';
+            : it.type === 'pdf'
+              ? it.thumb_url || '' // PDF 首页预览图(上传时生成/补图通道回补)
+              : '';
       const pindex = pindexOf.get(it.id);
       const faved = FAVORITES.has(it.id);
       const showCopy = !mobile && it.type === 'image';
@@ -1264,11 +1266,11 @@ function renderGrid() {
         (showCopy
           ? `<button class="copy-btn" data-act="copy-image" data-url="${it.file_url}" title="复制图片"><i class="fa-regular fa-copy"></i></button>`
           : '');
-      const thumbInner = isMedia
-        ? previewSrc
-          ? `<img src="${previewSrc}" alt="${escapeHtml(it.title)}" loading="lazy" decoding="async" />`
-          : `<div class="text-slate-300 text-xs">无预览</div>`
-        : `<div class="doc-icon ${meta.cls}"><i class="fa-solid ${meta.icon}"></i></div>`;
+      const thumbInner = previewSrc
+        ? `<img src="${previewSrc}" alt="${escapeHtml(it.title)}" loading="lazy" decoding="async" />`
+        : isMedia
+          ? `<div class="text-slate-300 text-xs">无预览</div>`
+          : `<div class="doc-icon ${meta.cls}"><i class="fa-solid ${meta.icon}"></i></div>`; // 无预览图的 PDF/Office 回退类型图标
       return `
         <div class="media-card${SELECTED.has(it.id) ? ' picked' : ''}" data-id="${it.id}"${
           pindex !== undefined ? ` data-pindex="${pindex}"` : ''
@@ -2816,6 +2818,37 @@ function generateVideoThumb(file: File): Promise<Blob | null> {
   });
 }
 
+/** PDF 首页渲染成预览图(pdf.js 动态导入按需加载,不进首屏包):
+ *  上传时生成缩略图,卡片直接显示内容预览;失败(加密/损坏)返回 null 回退类型图标 */
+async function generatePdfThumb(file: File): Promise<Blob | null> {
+  try {
+    const pdfjs = await import('pdfjs-dist');
+    const workerUrl = (await import('pdfjs-dist/build/pdf.worker.min.mjs?url')).default;
+    pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
+    const data = new Uint8Array(await file.arrayBuffer());
+    const doc = await pdfjs.getDocument({ data }).promise;
+    try {
+      const page = await doc.getPage(1);
+      const base = page.getViewport({ scale: 1 });
+      const scale = Math.min(2, 640 / base.width); // 宽限 640px,与图片缩略图同档
+      const viewport = page.getViewport({ scale });
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round(viewport.width));
+      canvas.height = Math.max(1, Math.round(viewport.height));
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return null;
+      ctx.fillStyle = '#fff'; // 透明底 PDF 垫白,避免深色模式下透出底色
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      await page.render({ canvas, viewport }).promise;
+      return await new Promise<Blob | null>((r) => canvas.toBlob(r, 'image/jpeg', 0.8));
+    } finally {
+      await doc.destroy();
+    }
+  } catch {
+    return null; // 加密/损坏 PDF:不阻断上传,卡片回退类型图标
+  }
+}
+
 /** 生成图片缩略图:长边缩到 640px 压成 JPEG。卡片列表只加载它,原图仅用于灯箱/复制/分享/下载 */
 async function generateImageThumb(file: File): Promise<Blob | null> {
   try {
@@ -2973,26 +3006,25 @@ async function compressImageIfNeeded(
   }
 }
 
-/** 给无缩略图的老图片补生成:拉原图 → 本地生成 → 上传 → 回写卡片。管理员一次性操作 */
+/** 给无缩略图的老图片/老 PDF 补生成:拉原文件 → 本地生成(图片压缩/PDF 首页渲染) → 上传 → 回写卡片。管理员一次性操作 */
 async function backfillThumbs(): Promise<void> {
   if (expiryGuard()) return;
   while (HAS_MORE) await loadMore(); // 分页后先加载全量,再找出缺缩略图的
-  const targets = ITEMS.filter((i) => i.type === 'image' && !i.thumb_url);
-  if (!targets.length) return toast('当前公司的图片都已有缩略图');
+  const targets = ITEMS.filter((i) => (i.type === 'image' || i.type === 'pdf') && !i.thumb_url);
+  if (!targets.length) return toast('当前公司的图片/PDF 都已有缩略图');
   let ok = 0;
   let skip = 0;
   let fail = 0;
-  toast(`开始补缩略图:共 ${targets.length} 张…`);
+  toast(`开始补缩略图:共 ${targets.length} 个…`);
   for (let i = 0; i < targets.length; i++) {
     const it = targets[i];
     try {
       const res = await fetch(it.file_url);
       if (!res.ok) throw new Error(String(res.status));
       const blob = await res.blob();
-      const thumbBlob = await generateImageThumb(
-        new File([blob], it.filename || it.title, { type: blob.type }),
-      );
-      // 原图已足够小:无需缩略图,跳过
+      const f = new File([blob], it.filename || it.title, { type: blob.type });
+      const thumbBlob = it.type === 'pdf' ? await generatePdfThumb(f) : await generateImageThumb(f);
+      // 图片原图已足够小无需缩略图、或 PDF 加密/损坏渲染不出:跳过
       if (!thumbBlob) {
         skip++;
         continue;
@@ -3012,7 +3044,7 @@ async function backfillThumbs(): Promise<void> {
   }
   renderGrid();
   toast(
-    `补缩略图完成:成功 ${ok} 张${skip ? `, ${skip} 张原图已够小跳过` : ''}${fail ? `, ${fail} 张失败` : ''}`,
+    `补缩略图完成:成功 ${ok} 个${skip ? `, ${skip} 个跳过(原图够小或 PDF 无法渲染)` : ''}${fail ? `, ${fail} 个失败` : ''}`,
     fail > 0 && ok === 0,
   );
 }
@@ -3070,6 +3102,17 @@ async function handleFileChosen(file: File) {
         const thumbFile = new File([blob], 'thumb.jpg', { type: 'image/jpeg' });
         const thumb = await uploadFile(thumbFile, 'thumb', (l, t) => {
           status.textContent = `缩略图上传中 ${Math.round((l / t) * 100)}%`;
+        });
+        thumbKey = thumb.key;
+        thumbUrl = thumb.url;
+      }
+    } else if (type === 'pdf') {
+      status.textContent = '生成 PDF 预览图…';
+      const blob = await generatePdfThumb(work);
+      if (blob) {
+        const thumbFile = new File([blob], 'thumb.jpg', { type: 'image/jpeg' });
+        const thumb = await uploadFile(thumbFile, 'thumb', (l, t) => {
+          status.textContent = `预览图上传中 ${Math.round((l / t) * 100)}%`;
         });
         thumbKey = thumb.key;
         thumbUrl = thumb.url;
@@ -3306,9 +3349,13 @@ async function batchUploadTask(files: File[], targetMenuId: string, queued: bool
       let thumbKey: string | null = null;
       let thumbUrl: string | null = null;
       const duration = type === 'video' ? await probeVideoDuration(work) : null;
-      if (type === 'video' || type === 'image') {
+      if (type === 'video' || type === 'image' || type === 'pdf') {
         const blob =
-          type === 'video' ? await generateVideoThumb(work) : await generateImageThumb(work);
+          type === 'video'
+            ? await generateVideoThumb(work)
+            : type === 'image'
+              ? await generateImageThumb(work)
+              : await generatePdfThumb(work); // PDF 首页预览图
         if (blob) {
           const t = await uploadFile(new File([blob], 'thumb.jpg', { type: 'image/jpeg' }), 'thumb');
           thumbKey = t.key;

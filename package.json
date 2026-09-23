@@ -20,6 +20,7 @@
     "heic2any": "^0.0.4",
     "libheif-js": "^1.23.2",
     "mammoth": "^1.12.3",
+    "pdfjs-dist": "^6.3.289",
     "sortablejs": "^1.15.6",
     "xlsx": "^0.18.5"
   },

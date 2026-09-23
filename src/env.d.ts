@@ -1,5 +1,11 @@
 /// <reference types="astro/client" />
 
+// Vite 资源 URL 导入(pdf.js worker 文件):?url 返回构建后的资源地址
+declare module '*?url' {
+  const src: string;
+  export default src;
+}
+
 type Runtime = import('@astrojs/cloudflare').Runtime<Env>;
 
 // Cloudflare 绑定:在 wrangler.jsonc 中声明,运行时通过 locals.runtime.env 访问
