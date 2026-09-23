@@ -161,9 +161,7 @@ async function init() {
   if (isSuper && ME.orgs) {
     const sel = $('#org-switcher') as HTMLSelectElement | null;
     if (sel) {
-      sel.innerHTML = ME.orgs
-        .map((o) => `<option value="${o.id}" ${o.id === activeOrgId ? 'selected' : ''}>${escapeHtml(o.name)}</option>`)
-        .join('');
+      renderOrgOptions();
       $('#org-switch-wrap')?.classList.remove('hidden');
       sel.addEventListener('change', () => {
         activeOrgId = sel.value;
@@ -3259,14 +3257,11 @@ async function refreshOrgSwitcher() {
   const { orgs } = await api<{ orgs: Org[] }>('/api/orgs');
   const sel = $('#org-switcher') as HTMLSelectElement | null;
   if (!sel) return;
-  sel.innerHTML = orgs
-    .map((o) => `<option value="${o.id}" ${o.id === activeOrgId ? 'selected' : ''}>${escapeHtml(o.name)}</option>`)
-    .join('');
   if (!activeOrgId && orgs.length) {
     activeOrgId = orgs[0].id;
-    sel.value = activeOrgId;
   }
-  if (ME) ME.orgs = orgs; // 同步到期字段,chip 读最新值
+  if (ME) ME.orgs = orgs; // 同步到期字段,chip 与选项文案读最新值
+  renderOrgOptions();
   updateExpiryChip();
 }
 
@@ -3281,14 +3276,34 @@ function fmtExpiryDate(sec: number): string {
 function currentOrgExpiry(): number | null {
   return ME?.orgs?.find((o) => o.id === activeOrgId)?.expires_at ?? null;
 }
+/** 下拉选项文案:公司名 + 各自到期时间,展开下拉不用切换就能逐家看到 */
+function orgOptionLabel(o: Org): string {
+  const exp = o.expires_at;
+  const suffix = !exp
+    ? '永久有效'
+    : exp < Math.floor(Date.now() / 1000)
+      ? `已到期 ${fmtExpiryDate(exp)}`
+      : `到期 ${fmtExpiryDate(exp)}`;
+  return `${o.name}(${suffix})`;
+}
+/** 重绘公司下拉选项(保留当前选中);设置到期后也调它刷新文案 */
+function renderOrgOptions() {
+  const sel = $('#org-switcher') as HTMLSelectElement | null;
+  if (!sel || !ME?.orgs) return;
+  sel.innerHTML = ME.orgs
+    .map((o) => `<option value="${o.id}" ${o.id === activeOrgId ? 'selected' : ''}>${escapeHtml(orgOptionLabel(o))}</option>`)
+    .join('');
+}
 function updateExpiryChip() {
   const chip = $('#org-expiry-chip');
   if (!chip || !isSuper) return;
+  // 到期时间已显示在下拉框文案里,chip 专职「点击改到期日」的动作入口;已到期红底警示
   const exp = currentOrgExpiry();
-  chip.innerHTML = exp
-    ? `<i class="fa-solid fa-calendar-check"></i> 到期 ${fmtExpiryDate(exp)}`
-    : `<i class="fa-solid fa-infinity"></i> 永久有效`;
-  chip.classList.toggle('expired', !!exp && exp < Math.floor(Date.now() / 1000));
+  const expired = !!exp && exp < Math.floor(Date.now() / 1000);
+  chip.innerHTML = expired
+    ? '<i class="fa-solid fa-triangle-exclamation"></i> 已到期'
+    : '<i class="fa-solid fa-calendar-check"></i> 改到期';
+  chip.classList.toggle('expired', expired);
 }
 function initOrgExpiryPicker() {
   const chip = $('#org-expiry-chip');
@@ -3297,6 +3312,13 @@ function initOrgExpiryPicker() {
   chip.addEventListener('click', () => {
     const exp = currentOrgExpiry();
     input.value = exp ? fmtExpiryDate(exp) : '';
+    // showPicker 的原生弹窗锚定 input 自身盒子:input 常年屏外(left:-9999px),
+    // 弹窗会跟着开在屏外,表现为「点了没反应」。开弹前先把 input 挪到 chip 正下方(仍透明)
+    const r = chip.getBoundingClientRect();
+    input.style.left = `${Math.round(r.left)}px`;
+    input.style.top = `${Math.round(r.bottom + 2)}px`;
+    input.style.width = `${Math.max(Math.round(r.width), 140)}px`;
+    input.style.height = '32px';
     const picker = input as HTMLInputElement & { showPicker?: () => void };
     if (typeof picker.showPicker === 'function') {
       try {
@@ -3306,7 +3328,8 @@ function initOrgExpiryPicker() {
         /* 落到内联展示 */
       }
     }
-    // 不支持 showPicker 的浏览器:输入框内联展示手动选
+    // 不支持 showPicker 的浏览器:清掉定位样式,输入框内联展示手动选
+    input.style.left = input.style.top = input.style.width = input.style.height = '';
     input.classList.add('expiry-input-inline');
     input.focus();
   });
@@ -3323,6 +3346,7 @@ function initOrgExpiryPicker() {
       const o = ME?.orgs?.find((x) => x.id === activeOrgId);
       if (o) o.expires_at = expiresAt;
       toast(expiresAt ? `已设置到期:${v} 当日末` : '已清除到期,永久有效');
+      renderOrgOptions();
       updateExpiryChip();
     } catch (e) {
       toast((e as Error).message, true);

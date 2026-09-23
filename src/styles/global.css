@@ -164,12 +164,15 @@ body {
   width: 1px;
   height: 1px;
   opacity: 0;
+  /* 点击 chip 后会把它挪到 chip 正下方锚定原生日期弹窗,透明态不能拦下层点击 */
+  pointer-events: none;
 }
 .expiry-input-offscreen.expiry-input-inline {
   position: static;
   width: auto;
   height: auto;
   opacity: 1;
+  pointer-events: auto;
 }
 /* 顶栏“每行列数”自定义下拉控件(深色面板,与顶栏风格统一) */
 /* 搜索框:顶栏半透明胶囊,与列数控件风格一致 */
