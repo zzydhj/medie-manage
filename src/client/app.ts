@@ -58,6 +58,8 @@ let searchQuery = '';
 // 个人收藏(服务端按账户存储):素材 id 集合;favView=当前展示收藏视图
 let FAVORITES = new Set<string>();
 let favView = false;
+// 收藏请求在飞中的素材 id:同一素材并发点击忽略,防乐观状态来回翻 / POST 竞态
+const favPending = new Set<string>();
 // 类型快捷筛选:''=全部;与搜索/菜单/收藏视图可叠加,参与缓存键与视图记忆
 type TypeFilter = '' | 'image' | 'video' | 'doc';
 let typeFilter: TypeFilter = '';
@@ -531,6 +533,7 @@ interface PageData {
   items: ItemDTO[];
   total: number;
   favorites?: string[];
+  favCount?: number;
 }
 function viewQuery(page: number): string {
   const p = new URLSearchParams({ page: String(page), pageSize: String(PAGE_SIZE) });
@@ -669,6 +672,19 @@ function patchFavCaches(id: string, on: boolean, it: ItemDTO | null) {
     else d.favorites = [...FAVORITES];
   });
 }
+/** 收藏拖拽调序后:落盘首屏与内存页缓存里的旧顺序都失效,一并作废,下次进入拉权威顺序。
+ *  与 patchFavCaches 的区别:items 集合没变只是顺序变,不需要乐观改写落盘列表 */
+function invalidateFavOrderCaches() {
+  if (!activeOrgId) return;
+  try {
+    localStorage.removeItem(`${LIST_CACHE_PREFIX}${activeOrgId}|||fav`);
+  } catch {
+    // 忽略
+  }
+  pageCache.forEach((_, k) => {
+    if (/\|fav\|\d+$/.test(k)) pageCache.delete(k);
+  });
+}
 /** 用上次落的列表立即渲染(刷新秒开);返回是否命中 */
 function paintStaleList(): boolean {
   const key = listKey();
@@ -718,15 +734,17 @@ async function fetchWindow(from: number, pages: number) {
   let items: ItemDTO[] = [];
   let total = 0;
   let favorites: string[] | undefined;
+  let favCount: number | undefined;
   let used = 0;
   for (let i = 0; i < ds.length; i++) {
     total = ds[i].total;
     if (ds[i].favorites) favorites = ds[i].favorites;
+    if (ds[i].favCount != null) favCount = ds[i].favCount;
     items = items.concat(ds[i].items);
     used = i + 1;
     if (ds[i].items.length < PAGE_SIZE) break;
   }
-  return { items, total, favorites, pages: used };
+  return { items, total, favorites, favCount, pages: used };
 }
 function appendWindow(w: { items: ItemDTO[]; total: number; pages: number }) {
   ITEMS = ITEMS.concat(w.items);
@@ -804,7 +822,10 @@ async function refreshList() {
     TOTAL = w.total;
     HAS_MORE = ITEMS.length < TOTAL;
     if (w.favorites) FAVORITES = new Set(w.favorites);
+    // 收藏计数以服务端为准:纠正乐观 +/- 的漂移(否则快速连点/回滚会把徽章算成负数)
+    if (w.favCount != null) FAV_COUNT = w.favCount;
     renderGrid();
+    updateFavCount();
     animateGridEnterIfNewView();
     await ensureFill(seq); // 动画(~420ms)进行中并行补满首屏
     if (seq !== refreshSeq) return;
@@ -964,8 +985,18 @@ async function bgPlan(org: string) {
     all.push(...d.items);
   }
   if (org !== activeOrgId) return;
+  // 收藏视图是个人自定义序(可拖拽调序),与整库清单的全局序不一致:单独发一次收藏请求拿权威首屏;
+  // 失败则不铺收藏视图(用全局序铺反而会污染个人序缓存,下次进入再校验也是闪一下错序)
+  let favFirst: { items: ItemDTO[]; total: number } | null = null;
+  try {
+    const fd = await api<PageData>(`/api/content?fav=1&page=1&pageSize=${PAGE_SIZE}`);
+    favFirst = { items: fd.items, total: fd.total };
+  } catch {
+    favFirst = null;
+  }
+  if (org !== activeOrgId) return;
   bgRebuildTree();
-  bgSeedLists(org, all, favs);
+  bgSeedLists(org, all, favs, favFirst);
   bgSeedBytes(all, new Set(favs));
 }
 function bgRebuildTree() {
@@ -991,9 +1022,8 @@ function bgChainOf(menuId: string): string[] {
 }
 /** R1 第二步:用整库清单一次性铺好每个视图的首屏缓存(内存 + localStorage)。
  *  服务端排序是全局的(sort_order,created_at),清单的任意子集顺序=该视图的顺序,
- *  所以不必再为每个分组单独发一次请求 */
-function bgSeedLists(org: string, all: ItemDTO[], favs: string[]) {
-  const favSet = new Set(favs);
+ *  所以不必再为每个分组单独发一次请求;唯一例外是收藏视图(个人自定义序),用 favFirst 覆盖 */
+function bgSeedLists(org: string, all: ItemDTO[], favs: string[], favFirst: { items: ItemDTO[]; total: number } | null) {
   const byView = new Map<string, ItemDTO[]>();
   const put = (view: string, it: ItemDTO) => {
     const arr = byView.get(view);
@@ -1003,14 +1033,18 @@ function bgSeedLists(org: string, all: ItemDTO[], favs: string[]) {
   for (const it of all) {
     put('', it);
     bgChainOf(it.menu_id).forEach((v) => put(v, it));
-    if (favSet.has(it.id)) put('fav', it);
+  }
+  const totalOverride = new Map<string, number>();
+  if (favFirst) {
+    byView.set('fav', favFirst.items);
+    totalOverride.set('fav', favFirst.total);
   }
   const cur = bgScope();
   let seeded = 0;
   byView.forEach((items, view) => {
     if (view === cur) return; // 当前视图由前台 writeListCache 维护(窗口可能已铺满 500 条),引擎不覆盖
     if (!view && MENUS.length) return; // 整库视图只在"没有菜单"时才是真实视图
-    const d: PageData = { items: items.slice(0, PAGE_SIZE), total: items.length, favorites: favs };
+    const d: PageData = { items: items.slice(0, PAGE_SIZE), total: totalOverride.get(view) ?? items.length, favorites: favs };
     // 键格式与 pageCacheKey / listKey 对齐:无搜索词、无类型筛选的第一页
     if (pageCache.size < BG_SEED_PAGE_CACHE_MAX) pageCache.set(`${org}|||${view}|1`, d);
     // 落盘上限与 LRU 对齐:再多也会被注册表挤掉,白写
@@ -2302,6 +2336,10 @@ function bindGrid() {
       e.stopPropagation();
       if (expiryGuard()) return;
       const id = b.dataset.id!;
+      // 同一素材的收藏请求在飞时忽略后续点击:否则快速连点会让乐观状态来回翻、多个 POST 竞态,
+      // 表现为"取消收藏点不掉、要点好几次"(用户反馈)
+      if (favPending.has(id)) return;
+      favPending.add(id);
       const on = !FAVORITES.has(id);
       const icon = b.querySelector('i');
       const paint = (v: boolean) => {
@@ -2309,11 +2347,11 @@ function bindGrid() {
         if (icon) icon.className = v ? 'fa-solid fa-star' : 'fa-regular fa-star';
         b.title = v ? '取消收藏' : '收藏';
       };
-      // 乐观更新:先改本地状态与样式,失败再回滚
+      // 乐观更新:先改本地状态与样式,失败再回滚;计数 clamp 防负,漂移由 refreshList 的服务端值纠正
       const it = ITEMS.find((i) => i.id === id) ?? null;
       if (on) FAVORITES.add(id);
       else FAVORITES.delete(id);
-      FAV_COUNT += on ? 1 : -1;
+      FAV_COUNT = Math.max(0, FAV_COUNT + (on ? 1 : -1));
       paint(on);
       updateFavCount();
       // 同步收藏视图缓存:否则切到「收藏」会命中旧缓存,刚收藏的素材不显示(用户反馈的问题)
@@ -2331,11 +2369,13 @@ function bindGrid() {
       } catch (err) {
         if (on) FAVORITES.delete(id);
         else FAVORITES.add(id);
-        FAV_COUNT += on ? -1 : 1;
+        FAV_COUNT = Math.max(0, FAV_COUNT + (on ? -1 : 1));
         paint(!on);
         updateFavCount();
         patchFavCaches(id, !on, it); // 回滚缓存,与回滚的星标保持一致
         toast((err as Error).message, true);
+      } finally {
+        favPending.delete(id);
       }
     });
   });
@@ -2405,20 +2445,20 @@ function bindGrid() {
   // 新增素材
   $('#add-item-tile')?.addEventListener('click', () => openItemModal());
 
-  // 卡片拖拽排序(仅管理员)
+  // 卡片拖拽排序:分组视图仅管理员(全局顺序,影响所有人);收藏视图是个人自定义序(任何用户可拖,只影响自己);
+  // 搜索/批量模式下禁用:长按拖拽会和勾选打架;
+  // 非叶子菜单(父级视图,混排多个子菜单卡片)与未选菜单(全量视图)同样禁用:
+  // 此时 newIndex 按混排列表计算,而 reorder 只作用于 selectedMenuId 单个菜单,
+  // 拖拽会把子菜单的卡片改挂到父菜单、且插入位置错乱。叶子菜单视图列表与菜单一一对应,照常可拖。
   if (cardSortable) {
     cardSortable.destroy();
     cardSortable = null; // 置空,避免对已销毁实例重复 destroy 抛 "Cannot set properties of null"
   }
   const grid = $('#card-grid');
-  // 搜索/收藏视图下禁用拖拽排序(跨菜单结果排序无意义,且 reorder 依赖 selectedMenuId);
-  // 批量模式下也禁用:长按拖拽会和勾选打架;
-  // 非叶子菜单(父级视图,混排多个子菜单卡片)与未选菜单(全量视图)同样禁用:
-  // 此时 newIndex 按混排列表计算,而 reorder 只作用于 selectedMenuId 单个菜单,
-  // 拖拽会把子菜单的卡片改挂到父菜单、且插入位置错乱。叶子菜单视图列表与菜单一一对应,照常可拖。
   const selMenu = selectedMenuId ? findMenu(MENUS, selectedMenuId) : null;
   const leafView = !!selectedMenuId && !(selMenu?.children?.length);
-  if (isAdmin && grid && !searchQuery.trim() && !favView && !selectMode && leafView) {
+  const favSortView = favView && !searchQuery.trim();
+  if (grid && !selectMode && (favSortView || (isAdmin && !searchQuery.trim() && !favView && leafView))) {
     cardSortable = Sortable.create(grid, {
       animation: 150,
       delay: 250,
@@ -2431,10 +2471,31 @@ function bindGrid() {
           return;
         }
         const id = evt.item.dataset.id;
-        if (!id || !selectedMenuId) return;
+        if (!id) return;
         // 计算新索引(排除 add-card 占位)
         const cards = Array.from(grid.querySelectorAll('.media-card')) as HTMLElement[];
         const newIndex = cards.indexOf(evt.item as HTMLElement);
+        // 收藏视图:存个人顺序;成功后同步本地窗口顺序 + 作废收藏缓存,防重渲染/下次进入回跳
+        if (favView) {
+          try {
+            await api('/api/favorites/reorder', {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ itemId: id, newIndex }),
+            });
+            const from = ITEMS.findIndex((i) => i.id === id);
+            if (from >= 0) {
+              const [m] = ITEMS.splice(from, 1);
+              ITEMS.splice(Math.min(newIndex, ITEMS.length), 0, m);
+            }
+            invalidateFavOrderCaches();
+          } catch (e) {
+            toast((e as Error).message, true);
+            await loadContent();
+          }
+          return;
+        }
+        if (!selectedMenuId) return;
         try {
           await api('/api/items/reorder', {
             method: 'PATCH',

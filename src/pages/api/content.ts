@@ -1,5 +1,5 @@
 import type { APIRoute } from 'astro';
-import { listFavoriteItemIds, listMenus } from '../../lib/db';
+import { listFavoriteItemIds, listMenus, listOrgFavorites } from '../../lib/db';
 import { err, getEnv, isResponse, json, requireOrg, requireUser } from '../../lib/api';
 
 export interface MenuNode {
@@ -76,6 +76,21 @@ interface ItemRow {
   sort_order: number;
 }
 
+function toDto(it: ItemRow) {
+  return {
+    id: it.id,
+    menu_id: it.menu_id,
+    type: it.type,
+    title: it.title,
+    file_url: it.file_url,
+    thumb_url: it.thumb_url,
+    filename: it.filename,
+    size: it.size, // 批量上传去重用:同一公司内「文件名 + 大小」相同即视为重复
+    duration: it.duration, // 视频时长(秒):卡片左下角时长胶囊
+    sort_order: it.sort_order,
+  };
+}
+
 // 返回当前公司作用域下的菜单树 + 分页后的卡片列表。
 // 查询参数:meta=1 只返树/计数;否则 page/pageSize/q/fav/menuId 控制分页与过滤(服务端搜索)。
 export const GET: APIRoute = async (context) => {
@@ -127,25 +142,52 @@ export const GET: APIRoute = async (context) => {
   const pageSize = Math.min(100, Math.max(1, parseInt(url.searchParams.get('pageSize') ?? '36', 10) || 36));
 
   const favorites = await listFavoriteItemIds(env.DB, user.id);
+  const tfTypes = TF_MAP[url.searchParams.get('t') ?? ''];
+
+  // 收藏视图:按个人自定义序(user_favorites.sort_order,收藏视图内可拖拽调序)分页。
+  // 下面的通用 ORDER BY 是素材全局序,表达不了个人序,故这里「先切 id 再按 id 取素材」:
+  // 先切页使 SQL 参数受 pageSize 约束,类型快捷筛选照常叠加
+  if (fav) {
+    const orgFavs = await listOrgFavorites(env.DB, user.id, scope.orgId);
+    const ids = tfTypes
+      ? orgFavs.filter((r) => tfTypes.includes(r.type)).map((r) => r.id)
+      : orgFavs.map((r) => r.id);
+    const pageIds = ids.slice((page - 1) * pageSize, page * pageSize);
+    let rows: ItemRow[] = [];
+    if (pageIds.length) {
+      const r = await env.DB
+        .prepare(
+          `SELECT id, menu_id, type, title, file_url, thumb_url, filename, size, duration, sort_order FROM items WHERE id IN (${pageIds.map(() => '?').join(',')})`,
+        )
+        .bind(...pageIds)
+        .all<ItemRow>();
+      const byId = new Map(r.results.map((x) => [x.id, x]));
+      rows = pageIds.map((id) => byId.get(id)).filter((x): x is ItemRow => !!x);
+    }
+    return json({
+      menus: tree,
+      counts,
+      directCounts,
+      favCount,
+      favorites,
+      total: ids.length,
+      page,
+      pageSize,
+      items: rows.map(toDto),
+    });
+  }
 
   const where: string[] = ['org_id = ?'];
   const params: (string | number)[] = [scope.orgId];
   if (q) {
     where.push('(title LIKE ? OR filename LIKE ?)');
     params.push(`%${q}%`, `%${q}%`);
-  } else if (fav) {
-    if (!favorites.length) {
-      return json({ menus: tree, counts, directCounts, favCount, favorites, items: [], total: 0, page, pageSize });
-    }
-    where.push(`id IN (${favorites.map(() => '?').join(',')})`);
-    params.push(...favorites);
   } else if (menuId) {
     const ids = subtreeIds(tree, menuId);
     if (!ids.length) return err('菜单不存在', 404);
     where.push(`menu_id IN (${ids.map(() => '?').join(',')})`);
     params.push(...ids);
   }
-  const tfTypes = TF_MAP[url.searchParams.get('t') ?? ''];
   if (tfTypes) {
     where.push(`type IN (${tfTypes.map(() => '?').join(',')})`);
     params.push(...tfTypes);
@@ -172,17 +214,6 @@ export const GET: APIRoute = async (context) => {
     total,
     page,
     pageSize,
-    items: results.map((it) => ({
-      id: it.id,
-      menu_id: it.menu_id,
-      type: it.type,
-      title: it.title,
-      file_url: it.file_url,
-      thumb_url: it.thumb_url,
-      filename: it.filename,
-      size: it.size, // 批量上传去重用:同一公司内「文件名 + 大小」相同即视为重复
-      duration: it.duration, // 视频时长(秒):卡片左下角时长胶囊
-      sort_order: it.sort_order,
-    })),
+    items: results.map((it) => toDto(it)),
   });
 };

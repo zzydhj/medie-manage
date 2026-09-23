@@ -194,10 +194,48 @@ export async function setUserGridCols(
 
 export async function listFavoriteItemIds(db: D1Database, userId: string): Promise<string[]> {
   const { results } = await db
-    .prepare('SELECT item_id FROM user_favorites WHERE user_id = ? ORDER BY created_at ASC')
+    .prepare('SELECT item_id FROM user_favorites WHERE user_id = ? ORDER BY sort_order ASC, created_at ASC')
     .bind(userId)
     .all<{ item_id: string }>();
   return (results ?? []).map((r) => r.item_id);
+}
+
+/** 当前公司内的收藏(带类型,按个人自定义序):收藏视图按 user_favorites.sort_order 分页,
+ *  与素材全局排序不是一回事,不能混进 content 接口的通用 WHERE/ORDER 路径 */
+export async function listOrgFavorites(
+  db: D1Database,
+  userId: string,
+  orgId: string,
+): Promise<{ id: string; type: string }[]> {
+  const { results } = await db
+    .prepare(
+      'SELECT f.item_id AS id, i.type AS type FROM user_favorites f JOIN items i ON i.id = f.item_id WHERE f.user_id = ? AND i.org_id = ? ORDER BY f.sort_order ASC, f.created_at ASC',
+    )
+    .bind(userId, orgId)
+    .all<{ id: string; type: string }>();
+  return results ?? [];
+}
+
+/** 收藏拖拽调序:只重排当前公司名下的收藏序号(各公司视图只排自己的收藏,互不影响)。
+ *  返回 false 表示该素材不在收藏里 */
+export async function reorderFavorite(
+  db: D1Database,
+  userId: string,
+  orgId: string,
+  itemId: string,
+  newIndex: number,
+): Promise<boolean> {
+  const ids = (await listOrgFavorites(db, userId, orgId)).map((r) => r.id);
+  const from = ids.indexOf(itemId);
+  if (from < 0) return false;
+  ids.splice(from, 1);
+  ids.splice(Math.min(newIndex, ids.length), 0, itemId);
+  await db.batch(
+    ids.map((id, i) =>
+      db.prepare('UPDATE user_favorites SET sort_order = ? WHERE user_id = ? AND item_id = ?').bind(i + 1, userId, id),
+    ),
+  );
+  return true;
 }
 
 export async function setFavorite(
@@ -207,9 +245,12 @@ export async function setFavorite(
   on: boolean,
 ): Promise<void> {
   if (on) {
+    // 新收藏排到个人序末尾:sort_order = 当前最大 + 1(旧数据全 0 时自然从 1 开始)
     await db
-      .prepare('INSERT OR IGNORE INTO user_favorites (user_id, item_id, created_at) VALUES (?, ?, ?)')
-      .bind(userId, itemId, now())
+      .prepare(
+        'INSERT OR IGNORE INTO user_favorites (user_id, item_id, created_at, sort_order) VALUES (?, ?, ?, (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM user_favorites WHERE user_id = ?))',
+      )
+      .bind(userId, itemId, now(), userId)
       .run();
   } else {
     await db
