@@ -771,6 +771,7 @@ function scheduleDeepPrefetch() {
   }, 10000);
 }
 async function deepPrefetch() {
+  if (warmupRunning) return; // 预热期间带宽全让给它:避免 7 路并发把卡片缩略图饿成长期空白
   if (isMobileViewport()) return; // 移动端省流量:缩略图仍按需懒加载
   const key = listKey();
   if (deepDone.has(key)) return;
@@ -898,13 +899,16 @@ function startWarmupUi() {
   if (!overlay) return;
   overlay.classList.remove('hidden');
   const t0 = Date.now();
+  let tick = 0;
   window.clearInterval(warmupUiTimer);
   warmupUiTimer = window.setInterval(() => {
+    tick++;
     const p = Math.min(100, Math.round(((Date.now() - t0) / WARMUP_UI_MS) * 100));
     const bar = $('#warmup-bar');
     const pct = $('#warmup-pct');
     if (bar) bar.style.width = `${p}%`;
     if (pct) pct.textContent = `${p}%`;
+    if (tick % 32 === 0) healPendingThumbs(); // 每 ~8s 自愈一批网格卡死的空白缩略图
     if (p >= 100) closeWarmupUi(); // 到 100% 必关,不管缓存刷完没
   }, 250);
 }
@@ -923,7 +927,21 @@ function closeWarmupUi() {
     }
   }
 }
-/** 实际预热工作:整库清单落页缓存 + 各视图第一页落盘 + 缩略图字节灌 HTTP 缓存;
+/** 自愈空白缩略图:网格里卡住没加载/加载失败的 img 强制重置 src 重拉一次(每个 img 限一次)。
+ *  预热期间卡片缩略图请求可能被重渲染取消、或被并发带宽饿死,卡片就永久空白;
+ *  自愈时 HTTP 缓存通常已暖,重置后瞬间完成 */
+function healPendingThumbs() {
+  document.querySelectorAll<HTMLImageElement>('#card-grid img').forEach((img) => {
+    if (img.dataset.healed) return;
+    if (img.complete && img.naturalWidth > 0) return; // 已正常加载,不动
+    const s = img.getAttribute('src');
+    if (!s) return;
+    img.dataset.healed = '1';
+    img.src = '';
+    img.src = s; // 先空再还原:强制重新加载,缓存已暖=瞬间完成
+  });
+}
+/** 实际预热工作:整库清单落页缓存 + 各菜单第一页落盘 + 全库缩略图字节灌 HTTP 缓存;
  *  进度窗已收(跳过/到点)也不中断,静默刷完落 done 标记 */
 async function maybeWarmup() {
   if (!activeOrgId || warmupRunning) return;
@@ -945,14 +963,22 @@ async function maybeWarmup() {
     let totalItems = Infinity;
     while (all.length < totalItems && page < 60) {
       page++;
-      const d = await api<PageData>(`/api/content?page=${page}&pageSize=${PAGE_SIZE}`);
+      let d: PageData | null = null;
+      for (let attempt = 0; attempt < 2 && !d; attempt++) {
+        try {
+          d = await api<PageData>(`/api/content?page=${page}&pageSize=${PAGE_SIZE}`);
+        } catch {
+          d = null; // 单页失败(冷启动/瞬时):重试一次,仍败则跳过该页
+        }
+      }
+      if (!d) continue; // 不因一页失败 abort 整个预热:否则其余菜单的缩略图永远不缓存
       pageCache.set(`${activeOrgId}|||${page}`, d); // 整库视图页缓存:首屏翻页直接命中
       totalItems = d.total;
       all.push(...d.items);
       report(all.length, Math.min(totalItems, WARMUP_MAX_ITEMS));
       if (org !== activeOrgId) return; // 切公司:预热作废
     }
-    prefetchMenuPage(null, true);
+    await prefetchMenuPage(null, true);
     const flat: string[] = [];
     const walk = (ns: MenuNode[]) =>
       ns.forEach((n) => {
@@ -960,16 +986,23 @@ async function maybeWarmup() {
         if (n.children?.length) walk(n.children);
       });
     walk(MENUS);
-    flat.forEach((id) => prefetchMenuPage(id, false));
+    // 逐菜单串行落第一页:并发齐发几十请求易打爆冷启动 Worker 出 500,反过来 abort 预热
+    for (const id of flat) {
+      if (org !== activeOrgId) return;
+      await prefetchMenuPage(id, false);
+    }
     // 2) 缩略图字节进 HTTP 缓存(immutable,跨刷新/重启保留)→ 卡片不再有白占位
     const seen = new Set<string>();
     const queue: string[] = [];
+    const rest: string[] = [];
+    const curUrls = new Set(ITEMS.map((it) => it.thumb_url).filter((u): u is string => !!u));
     for (const it of all.slice(0, WARMUP_MAX_ITEMS)) {
-      if (it.thumb_url && !seen.has(it.thumb_url)) {
-        seen.add(it.thumb_url);
-        queue.push(it.thumb_url);
-      }
+      if (!it.thumb_url || seen.has(it.thumb_url)) continue;
+      seen.add(it.thumb_url);
+      // 当前视图缩略图排最前(用户正看的先不白),其余全库(所有菜单)随后
+      (curUrls.has(it.thumb_url) ? queue : rest).push(it.thumb_url);
     }
+    queue.push(...rest);
     const total = queue.length;
     let done = 0;
     let qi = 0;
@@ -989,6 +1022,7 @@ async function maybeWarmup() {
     // 4 并发:比日常预载激进(此时用户就在等),又不至于把浏览器连接池占死
     await Promise.all([worker(), worker(), worker(), worker()]);
     localStorage.setItem(`${WARMUP_PREFIX}${org}`, 'done');
+    healPendingThumbs(); // 缓存已暖:网格还卡着的空白缩略图强制重拉,瞬间完成
   } catch {
     // 网络异常等:静默放弃,不打扰用户;标记 skip 避免每次刷新都弹大窗
     try {
@@ -996,9 +1030,11 @@ async function maybeWarmup() {
     } catch {
       // localStorage 不可用时忽略
     }
+    healPendingThumbs();
     closeWarmupUi();
   } finally {
     warmupRunning = false;
+    scheduleDeepPrefetch(); // 预热结束(成功或失败)再排原图深度预载:预热期间被抑制
   }
 }
 /** 无缓存切换时立即铺骨架屏:视觉"瞬间有响应",避免空白等待感 */
