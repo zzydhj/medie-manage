@@ -108,8 +108,8 @@ export async function createOrg(
 }
 
 export async function deleteOrg(db: D1Database, id: string): Promise<void> {
-  // 外键 ON DELETE CASCADE 会连带删除 menus / items / users
-  await db.pragma('foreign_keys = ON');
+  // 外键 ON DELETE CASCADE 会连带删除 menus / items / users(D1 默认强制外键,无需 pragma;
+  // D1Database 也没有 pragma 方法,调用会直接 TypeError 致 500)
   await db.prepare('DELETE FROM organizations WHERE id = ?').bind(id).run();
 }
 
@@ -279,7 +279,6 @@ export async function renameMenu(
 }
 
 export async function deleteMenu(db: D1Database, id: string, orgId: string): Promise<void> {
-  await db.pragma('foreign_keys = ON');
   // 手动级联:先删子孙菜单与相关 items,再删自身(兼容未开启外键的运行时)
   const all = await listMenus(db, orgId);
   const toDelete = new Set<string>([id]);
