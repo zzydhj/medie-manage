@@ -548,15 +548,35 @@ function writeListCache() {
       ts: Date.now(),
     };
     localStorage.setItem(key, JSON.stringify(payload));
-    // 注册表 LRU:只留最近 8 个视图,防 localStorage 膨胀
-    const reg: string[] = JSON.parse(localStorage.getItem(LIST_REGISTRY) || '[]');
-    const next = [key, ...reg.filter((k) => k !== key)].slice(0, 8);
-    reg.forEach((k) => {
-      if (!next.includes(k)) localStorage.removeItem(k);
-    });
-    localStorage.setItem(LIST_REGISTRY, JSON.stringify(next));
+    touchListRegistry(key);
   } catch {
     // 配额满/隐私模式:静默放弃缓存,不影响功能
+  }
+}
+/** 注册表 LRU:留最近 N 个视图,超出的连数据一起淘汰,防 localStorage 膨胀 */
+const LIST_CACHE_MAX_VIEWS = 30;
+function touchListRegistry(key: string) {
+  const reg: string[] = JSON.parse(localStorage.getItem(LIST_REGISTRY) || '[]');
+  const next = [key, ...reg.filter((k) => k !== key)].slice(0, LIST_CACHE_MAX_VIEWS);
+  reg.forEach((k) => {
+    if (!next.includes(k)) localStorage.removeItem(k);
+  });
+  localStorage.setItem(LIST_REGISTRY, JSON.stringify(next));
+}
+/** 预取结果落盘 SWR 层:刷新后内存页缓存清零,点该分组仍能 paintStaleList 秒开首屏 */
+function writePrefetchCache(key: string, d: PageData) {
+  if (!d.items.length) return; // 空列表不写(与 readListCache 的非空校验对齐)
+  try {
+    const payload: ListCache = {
+      items: d.items,
+      total: d.total,
+      favorites: d.favorites ?? [],
+      ts: Date.now(),
+    };
+    localStorage.setItem(key, JSON.stringify(payload));
+    touchListRegistry(key);
+  } catch {
+    // 配额满/隐私模式:静默放弃
   }
 }
 /** 用上次落的列表立即渲染(刷新秒开);返回是否命中 */
@@ -753,17 +773,22 @@ function updateGridFooter() {
   if (loadingMore) f.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> 加载中…';
   else f.textContent = `已加载全部 ${TOTAL} 个`;
 }
-/** 预取某视图第一页进页缓存:悬停/空闲时调用,切换命中缓存=秒开 */
+/** 预取某视图第一页进页缓存:悬停/空闲时调用,切换命中缓存=秒开;
+ *  同时落盘 localStorage:刷新后内存缓存清零,点该分组仍能旧窗口秒开再后台替换 */
 function prefetchMenuPage(menuId: string | null, fav: boolean) {
   if (!activeOrgId) return;
   // 与 pageCacheKey 对齐:预取假定无搜索词(切菜单会 resetSearch)
-  const key = `${activeOrgId}||${fav ? 'fav' : menuId ?? ''}|1`;
+  const view = fav ? 'fav' : menuId ?? '';
+  const key = `${activeOrgId}||${view}|1`;
   if (pageCache.has(key)) return;
   const p = new URLSearchParams({ page: '1', pageSize: String(PAGE_SIZE) });
   if (fav) p.set('fav', '1');
   else if (menuId) p.set('menuId', menuId);
   api<PageData>(`/api/content?${p.toString()}`)
-    .then((d) => pageCache.set(key, d))
+    .then((d) => {
+      pageCache.set(key, d);
+      writePrefetchCache(`${LIST_CACHE_PREFIX}${activeOrgId}||${view}`, d);
+    })
     .catch(() => {});
 }
 let prefetchTimer: number | undefined;
@@ -778,7 +803,8 @@ function schedulePrefetch() {
       if (n.children?.length) walk(n.children);
     });
   walk(MENUS);
-  const queue = flat.filter((id) => (COUNTS[id] ?? 0) > 0).slice(0, 12);
+  // 预取上限与 LRU 对齐(每个只一页小 JSON,400ms 一个不抢带宽),刷新后全部分组都能秒开
+  const queue = flat.filter((id) => (COUNTS[id] ?? 0) > 0).slice(0, 29);
   let i = 0;
   const step = () => {
     if (activeOrgId !== org) return; // 切公司:预取作废
