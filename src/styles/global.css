@@ -642,7 +642,7 @@ body {
 .card-grid.compact .copy-btn i { font-size: 11px; }
 .card-grid.compact .copy-btn.share.solo { right: 35px; }
 .card-grid.compact .type-badge { font-size: 9px; padding: 1px 6px; top: 4px; left: 4px; }
-.card-grid.compact .play-badge i { width: 34px; height: 34px; font-size: 13px; padding-left: 3px; }
+.card-grid.compact .play-badge i { width: 30px; height: 30px; font-size: 11px; padding-left: 2px; }
 .card-grid.compact .dur-pill { font-size: 9px; padding: 1px 5px; left: 5px; bottom: 5px; }
 .card-grid.compact .doc-icon { font-size: 26px; min-height: 0; }
 .card-grid.compact .card-actions { top: 4px; right: 4px; gap: 4px; }
@@ -727,7 +727,8 @@ body {
 .doc-icon.t-pdf { background: #fef2f2; color: #dc2626; }
 .doc-icon.t-word { background: #eff6ff; color: #2563eb; }
 .doc-icon.t-excel { background: #f0fdf4; color: #16a34a; }
-/* 播放钮:静态隐藏(零遮挡),悬停才浮现——实心深色圆+白三角+白描边,任何底色缩略图上都高对比 */
+/* 播放钮:常驻显示(用户要求一眼可辨)——实心深色圆+白三角+白描边,任何底色缩略图上都高对比;
+   尺寸克制在 44px,尽量少吃缩略图画面 */
 .play-badge {
   position: absolute;
   inset: 0;
@@ -735,23 +736,16 @@ body {
   align-items: center;
   justify-content: center;
   pointer-events: none;
-  opacity: 0;
-  transform: scale(0.72);
-  transition: opacity 0.18s ease, transform 0.18s ease;
-}
-.media-card:hover .play-badge {
-  opacity: 1;
-  transform: scale(1);
 }
 .play-badge i {
-  width: 52px;
-  height: 52px;
+  width: 44px;
+  height: 44px;
   border-radius: 50%;
   display: flex;
   align-items: center;
   justify-content: center;
-  padding-left: 4px; /* 三角光学居中 */
-  font-size: 20px;
+  padding-left: 3px; /* 三角光学居中 */
+  font-size: 17px;
   color: #fff;
   background: rgba(17, 24, 39, 0.78);
   border: 2px solid rgba(255, 255, 255, 0.92);

@@ -644,17 +644,18 @@ async function ensureFill(seq = refreshSeq) {
     appendWindow(await fetchWindow(PAGE + 1, 3));
   }
 }
-/** 后台静默预载剩余页:首屏填满后把后面内容全部拉进已加载窗口,滚动零等待、不漏内容 */
+/** 后台静默预载剩余页:首屏填满后尽快把后面内容全量拉进已加载窗口,
+ *  菜单打开即全部可见(不再"先 36 个、滚下去等半天")。10 页/波并行,波内同发、
+ *  波间让出主线程防长任务;顺序追加保证排序不乱 */
 let preloadSeq = 0;
 function startPreload() {
   const seq = ++preloadSeq;
   (async () => {
     try {
-      let pages = 0;
-      while (HAS_MORE && pages < 10 && seq === preloadSeq) {
-        const w = await fetchWindow(PAGE + 1, 5);
+      while (HAS_MORE && PAGE < 60 && seq === preloadSeq) {
+        const w = await fetchWindow(PAGE + 1, 10);
+        if (seq !== preloadSeq) return; // 用户已切走:作废
         appendWindow(w);
-        pages += w.pages;
         await new Promise((r) => setTimeout(r, 0)); // 让出主线程,避免长任务卡交互
       }
       if (seq === preloadSeq) writeListCache(); // 全量窗口落盘,下次刷新秒开
