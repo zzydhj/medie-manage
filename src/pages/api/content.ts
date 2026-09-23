@@ -117,6 +117,12 @@ export const GET: APIRoute = async (context) => {
   const q = (url.searchParams.get('q') ?? '').trim();
   const fav = url.searchParams.get('fav') === '1';
   const menuId = url.searchParams.get('menuId');
+  // 类型快捷筛选:t=image|video|doc(文档=PDF/Word/Excel),与搜索/菜单/收藏可叠加
+  const TF_MAP: Record<string, string[]> = {
+    image: ['image'],
+    video: ['video'],
+    doc: ['pdf', 'word', 'excel'],
+  };
   const page = Math.max(1, parseInt(url.searchParams.get('page') ?? '1', 10) || 1);
   const pageSize = Math.min(100, Math.max(1, parseInt(url.searchParams.get('pageSize') ?? '36', 10) || 36));
 
@@ -138,6 +144,11 @@ export const GET: APIRoute = async (context) => {
     if (!ids.length) return err('菜单不存在', 404);
     where.push(`menu_id IN (${ids.map(() => '?').join(',')})`);
     params.push(...ids);
+  }
+  const tfTypes = TF_MAP[url.searchParams.get('t') ?? ''];
+  if (tfTypes) {
+    where.push(`type IN (${tfTypes.map(() => '?').join(',')})`);
+    params.push(...tfTypes);
   }
   const whereSql = where.join(' AND ');
 

@@ -58,6 +58,9 @@ let searchQuery = '';
 // 个人收藏(服务端按账户存储):素材 id 集合;favView=当前展示收藏视图
 let FAVORITES = new Set<string>();
 let favView = false;
+// 类型快捷筛选:''=全部;与搜索/菜单/收藏视图可叠加,参与缓存键与视图记忆
+type TypeFilter = '' | 'image' | 'video' | 'doc';
+let typeFilter: TypeFilter = '';
 // 批量选择:开启后点卡片=勾选(不再打开预览),可逐个下载 / 多文件分享
 let selectMode = false;
 const SELECTED = new Set<string>();
@@ -285,11 +288,27 @@ async function init() {
     enterLockMode();
     return;
   }
+  // 新设备/无缓存首登:loadContent 前先挂全屏预热进度窗(文案"加载中"与首屏加载自然衔接),
+  // 首屏渲染在弹窗背后照常进行,预热完成收窗即是可交互状态
+  const needWarmup = !!activeOrgId && warmupNeeded(activeOrgId);
+  if (needWarmup) $('#warmup-overlay')?.classList.remove('hidden');
   await loadContent();
+  if (needWarmup) maybeWarmup().catch(() => {});
 }
 
 function bindHeader() {
   $('#btn-logout')?.addEventListener('click', doLogout);
+  // 类型快捷筛选:分段 chips 点击切换,与搜索/菜单/收藏叠加;切回当前视图重拉
+  $('#type-filter')?.addEventListener('click', (e: Event) => {
+    const b = (e.target as HTMLElement).closest?.('.tf-chip') as HTMLElement | null;
+    if (!b) return;
+    const tf = (b.dataset.tf || '') as TypeFilter;
+    if (tf === typeFilter) return;
+    typeFilter = tf;
+    syncTypeFilterUI();
+    saveView();
+    refreshList().catch((er) => toast((er as Error).message, true));
+  });
   $('#btn-companies')?.addEventListener('click', openOrgModal);
   $('#btn-users')?.addEventListener('click', openUserModal);
   $('#btn-backfill')?.addEventListener('click', backfillThumbs);
@@ -307,6 +326,13 @@ function bindHeader() {
   });
 }
 
+// 类型快捷筛选 chips:按当前 typeFilter 点亮激活项(初始/点击/视图恢复共用)
+function syncTypeFilterUI() {
+  document.querySelectorAll<HTMLElement>('#type-filter .tf-chip').forEach((c) => {
+    c.classList.toggle('active', (c.dataset.tf || '') === typeFilter);
+  });
+}
+
 // ---------------- 手机端:底部导航 / 搜索抽屉 / 账户 sheet ----------------
 // 窄屏时把顶栏里的搜索框、公司切换器“搬”进手机端容器(同一个 DOM 节点,
 // 事件与输入状态不丢);回到宽屏再搬回顶栏,避免两套输入源不同步。
@@ -314,11 +340,15 @@ function relocateForViewport() {
   const header = $('.app-header') as HTMLElement | null;
   const dock = $('#mobile-search');
   const sc = $('#search-control');
+  const tf = $('#type-filter');
   if (header && dock && sc) {
     if (isMobileViewport()) {
       if (sc.parentElement !== dock) dock.appendChild(sc);
+      // 筛选 chips 随搜索框一起进抽屉:手机上在搜索弹层里同样可切
+      if (tf && tf.parentElement !== dock) dock.appendChild(tf);
     } else if (sc.parentElement !== header) {
       header.insertBefore(sc, $('#cols-control'));
+      if (tf && tf.parentElement !== header) header.insertBefore(tf, sc);
     }
   }
   // 切换器 + 到期 chip 整体搬动:手机端超管也能在账户 sheet 里设到期日
@@ -450,12 +480,13 @@ interface SavedView {
   orgId: string | null;
   menuId: string | null;
   fav: boolean;
+  tf?: string;
 }
 function saveView() {
   try {
     localStorage.setItem(
       VIEW_KEY,
-      JSON.stringify({ orgId: activeOrgId, menuId: selectedMenuId, fav: favView }),
+      JSON.stringify({ orgId: activeOrgId, menuId: selectedMenuId, fav: favView, tf: typeFilter }),
     );
   } catch {
     /* 隐私模式等写不了就忽略,不影响主流程 */
@@ -485,12 +516,13 @@ function viewQuery(page: number): string {
   if (searchQuery.trim()) p.set('q', searchQuery.trim());
   else if (favView) p.set('fav', '1');
   else if (selectedMenuId) p.set('menuId', selectedMenuId);
+  if (typeFilter) p.set('t', typeFilter);
   return p.toString();
 }
 // 页缓存:切回看过的视图/页直接命中内存,免网络往返 → 切换秒开;任何变更(loadContent/收藏)会清空
 const pageCache = new Map<string, PageData>();
 function pageCacheKey(page: number): string {
-  return `${activeOrgId}|${searchQuery.trim()}|${favView ? 'fav' : selectedMenuId ?? ''}|${page}`;
+  return `${activeOrgId}|${searchQuery.trim()}|${typeFilter}|${favView ? 'fav' : selectedMenuId ?? ''}|${page}`;
 }
 function clearPageCache() {
   pageCache.clear();
@@ -513,7 +545,9 @@ async function fetchPage(page: number): Promise<PageData> {
 const LIST_CACHE_PREFIX = 'mm-list-';
 const LIST_REGISTRY = 'mm-list-registry';
 function listKey(): string {
-  return `${LIST_CACHE_PREFIX}${activeOrgId}|${searchQuery.trim()}|${favView ? 'fav' : selectedMenuId ?? ''}`;
+  return `${LIST_CACHE_PREFIX}${activeOrgId}|${searchQuery.trim()}|${typeFilter}|${
+    favView ? 'fav' : selectedMenuId ?? ''
+  }`;
 }
 interface ListCache {
   items: ItemDTO[];
@@ -782,7 +816,8 @@ function prefetchMenuPage(menuId: string | null, fav: boolean) {
   if (!activeOrgId) return;
   // 与 pageCacheKey 对齐:预取假定无搜索词(切菜单会 resetSearch)
   const view = fav ? 'fav' : menuId ?? '';
-  const key = `${activeOrgId}||${view}|1`;
+  // 与 pageCacheKey 对齐(无搜索词、无类型筛选):org|q|tf|view|page
+  const key = `${activeOrgId}|||${view}|1`;
   if (pageCache.has(key)) return;
   const p = new URLSearchParams({ page: '1', pageSize: String(PAGE_SIZE) });
   if (fav) p.set('fav', '1');
@@ -790,7 +825,7 @@ function prefetchMenuPage(menuId: string | null, fav: boolean) {
   api<PageData>(`/api/content?${p.toString()}`)
     .then((d) => {
       pageCache.set(key, d);
-      writePrefetchCache(`${LIST_CACHE_PREFIX}${activeOrgId}||${view}`, d);
+      writePrefetchCache(`${LIST_CACHE_PREFIX}${activeOrgId}|||${view}`, d);
     })
     .catch(() => {});
 }
@@ -818,6 +853,126 @@ function schedulePrefetch() {
   };
   prefetchTimer = window.setTimeout(step, 1200);
 }
+// ---------------- 新设备首登预热:一次性把列表元数据 + 缩略图字节灌进缓存 ----------------
+// 首次打开(本机无任何列表缓存)时全屏弹窗跑进度,刷完之后任何分组/刷新都秒开,
+// 不再出现"白占位图等半天";跳过后转后台静默继续,做完落标记,下次不再打扰
+const WARMUP_PREFIX = 'mm-warmup-'; // + orgId:done=已完成 / skip=用户跳过(不再弹大窗)
+const WARMUP_MAX_ITEMS = 2000; // 超大库封顶:先预热前 2000 个,其余靠日常深度预载补
+let warmupRunning = false;
+function warmupNeeded(orgId: string): boolean {
+  if (localStorage.getItem(`${WARMUP_PREFIX}${orgId}`)) return false;
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k?.startsWith(LIST_CACHE_PREFIX)) return false; // 已有列表缓存=老设备,不预热
+    }
+  } catch {
+    return false;
+  }
+  return true;
+}
+async function maybeWarmup() {
+  if (!activeOrgId || warmupRunning) return;
+  if (ME?.orgExpired || !warmupNeeded(activeOrgId)) return;
+  warmupRunning = true;
+  const org = activeOrgId;
+  const overlay = $('#warmup-overlay');
+  const bar = $('#warmup-bar');
+  const pct = $('#warmup-pct');
+  const label = $('#warmup-label');
+  const skippedByUser = localStorage.getItem(`${WARMUP_PREFIX}${org}`) === 'skip';
+  // 用户之前点过跳过:不再弹大窗,后台静默刷;首次:弹全屏进度
+  const showUi = !!overlay && !skippedByUser;
+  if (showUi) {
+    overlay!.classList.remove('hidden');
+    $('#warmup-skip')?.addEventListener(
+      'click',
+      () => {
+        overlay!.classList.add('hidden');
+        localStorage.setItem(`${WARMUP_PREFIX}${org}`, 'skip'); // 刷新也不再弹,后台继续刷
+      },
+      { once: true },
+    );
+  }
+  const report = (done: number, total: number) => {
+    if (!showUi || !total) return;
+    const p = Math.min(100, Math.round((done / total) * 100));
+    if (bar) bar.style.width = `${p}%`;
+    if (pct) pct.textContent = `${p}%`;
+    if (label) label.textContent = `正在缓存素材预览 ${done} / ${total}`;
+  };
+  try {
+    // 1) 元数据全量:整库逐页拉清单(URL 与 pageCacheKey 同格式,顺带进页缓存),
+    //    收藏 + 各菜单第一页落盘 → 切分组秒开
+    const all: ItemDTO[] = [];
+    let page = 0;
+    let totalItems = Infinity;
+    while (all.length < totalItems && page < 60) {
+      page++;
+      const d = await api<PageData>(`/api/content?page=${page}&pageSize=${PAGE_SIZE}`);
+      pageCache.set(`${activeOrgId}|||${page}`, d); // 整库视图页缓存:首屏翻页直接命中
+      totalItems = d.total;
+      all.push(...d.items);
+      report(all.length, Math.min(totalItems, WARMUP_MAX_ITEMS));
+      if (org !== activeOrgId) return; // 切公司:预热作废
+    }
+    prefetchMenuPage(null, true);
+    const flat: string[] = [];
+    const walk = (ns: MenuNode[]) =>
+      ns.forEach((n) => {
+        flat.push(n.id);
+        if (n.children?.length) walk(n.children);
+      });
+    walk(MENUS);
+    flat.forEach((id) => prefetchMenuPage(id, false));
+    // 2) 缩略图字节进 HTTP 缓存(immutable,跨刷新/重启保留)→ 卡片不再有白占位
+    const seen = new Set<string>();
+    const queue: string[] = [];
+    for (const it of all.slice(0, WARMUP_MAX_ITEMS)) {
+      if (it.thumb_url && !seen.has(it.thumb_url)) {
+        seen.add(it.thumb_url);
+        queue.push(it.thumb_url);
+      }
+    }
+    const total = queue.length;
+    let done = 0;
+    let qi = 0;
+    const worker = async () => {
+      while (qi < queue.length) {
+        const url = queue[qi++];
+        try {
+          const res = await fetch(url);
+          await res.blob(); // 读完 body 才确保写入 HTTP 缓存
+        } catch {
+          // 单个失败忽略,不影响整体
+        }
+        done++;
+        report(done, total);
+      }
+    };
+    // 4 并发:比日常预载激进(此时用户就在等),又不至于把浏览器连接池占死
+    await Promise.all([worker(), worker(), worker(), worker()]);
+    localStorage.setItem(`${WARMUP_PREFIX}${org}`, 'done');
+    if (showUi) {
+      if (label) label.textContent = '加载完成,之后打开都能秒开了';
+      if (bar) bar.style.width = '100%';
+      if (pct) pct.textContent = '100%';
+      await new Promise((r) => setTimeout(r, 700)); // 让用户看到 100% 再收
+      overlay!.classList.add('hidden');
+      toast('预热完成:素材已全部缓存,之后打开秒开');
+    }
+  } catch {
+    // 网络异常等:静默放弃,不打扰用户;标记 skip 避免每次刷新都弹大窗
+    try {
+      localStorage.setItem(`${WARMUP_PREFIX}${org}`, 'skip');
+    } catch {
+      // localStorage 不可用时忽略
+    }
+    overlay?.classList.add('hidden');
+  } finally {
+    warmupRunning = false;
+  }
+}
 /** 无缓存切换时立即铺骨架屏:视觉"瞬间有响应",避免空白等待感 */
 function renderSkeleton() {
   const grid = $('#card-grid');
@@ -842,6 +997,9 @@ async function loadContent() {
   }
   // 视图恢复纯读 localStorage:先定视图,立即用上次落的列表秒开(stale-while-revalidate)
   const saved = restoreView();
+  typeFilter =
+    saved?.tf === 'image' || saved?.tf === 'video' || saved?.tf === 'doc' ? saved.tf : '';
+  syncTypeFilterUI();
   if (saved?.fav) {
     favView = true;
     selectedMenuId = null;

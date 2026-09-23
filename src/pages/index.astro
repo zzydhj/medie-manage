@@ -30,6 +30,22 @@ if (!user) {
 
     <div class="spacer"></div>
 
+    <!-- 类型快捷筛选:分段 chips(选项常可见+激活态明确,比下拉直观);窄屏随搜索框搬进抽屉 -->
+    <div class="type-filter" id="type-filter">
+      <button class="tf-chip active" data-tf="" type="button" title="显示全部类型">
+        <i class="fa-solid fa-layer-group"></i><span>全部</span>
+      </button>
+      <button class="tf-chip" data-tf="image" type="button" title="只显示图片">
+        <i class="fa-regular fa-image"></i><span>图片</span>
+      </button>
+      <button class="tf-chip" data-tf="video" type="button" title="只显示视频">
+        <i class="fa-solid fa-film"></i><span>视频</span>
+      </button>
+      <button class="tf-chip" data-tf="doc" type="button" title="只显示文档(PDF/Word/Excel)">
+        <i class="fa-regular fa-file-lines"></i><span>文档</span>
+      </button>
+    </div>
+
     <!-- 搜索:按文件名或标题过滤当前公司素材(全公司范围) -->
     <div class="search-control" id="search-control">
       <i class="fa-solid fa-magnifying-glass search-icon"></i>
@@ -323,6 +339,21 @@ if (!user) {
       <div class="expiry-modal-title">会员到期</div>
       <div class="expiry-modal-text">续费后使用</div>
       <button class="btn btn-primary expiry-modal-btn" data-close="expiry-modal">我知道了</button>
+    </div>
+  </div>
+
+  <!-- ===== 新设备首登预热:全屏进度窗,后台把列表+缩略图灌进缓存,刷完秒开;可跳过转后台静默 ===== -->
+  <div id="warmup-overlay" class="warmup-overlay hidden">
+    <div class="warmup-box">
+      <i class="fa-solid fa-bolt warmup-icon"></i>
+      <div class="warmup-title">首次新设备登录,努力加载中</div>
+      <div class="warmup-sub">正在把素材预览缓存到本机,预计需要 1~2 分钟,完成后打开都能秒开</div>
+      <div class="warmup-track"><div id="warmup-bar" class="warmup-bar"></div></div>
+      <div class="warmup-meta">
+        <span id="warmup-label">正在准备…</span>
+        <span id="warmup-pct">0%</span>
+      </div>
+      <button id="warmup-skip" class="btn btn-ghost warmup-skip" type="button">跳过,先浏览(后台继续加载)</button>
     </div>
   </div>
 

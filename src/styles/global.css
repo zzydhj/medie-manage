@@ -222,6 +222,86 @@ body {
 .lock-logout {
   margin-top: 18px;
 }
+/* ===== 新设备首登预热:全屏进度窗;z 95 盖住锁屏(90)/页面,在弹窗 mask(100)之下 ===== */
+.warmup-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 95;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(15, 23, 42, 0.55);
+  backdrop-filter: blur(6px);
+}
+.warmup-overlay.hidden {
+  display: none;
+}
+.warmup-box {
+  width: min(440px, 100%);
+  background: #fff;
+  border-radius: 20px;
+  padding: 36px 32px 28px;
+  text-align: center;
+  box-shadow: 0 24px 64px rgba(15, 23, 42, 0.35);
+  animation: warmup-in 0.25s ease;
+}
+@keyframes warmup-in {
+  from { transform: scale(0.92); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}
+.warmup-icon {
+  font-size: 44px;
+  color: #2563eb;
+  filter: drop-shadow(0 4px 14px rgba(37, 99, 235, 0.35));
+  animation: warmup-pulse 1.2s ease-in-out infinite;
+}
+@keyframes warmup-pulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.12); opacity: 0.75; }
+}
+.warmup-title {
+  margin-top: 14px;
+  font-size: 19px;
+  font-weight: 800;
+  color: #1f2937;
+}
+.warmup-sub {
+  margin-top: 8px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: #64748b;
+}
+.warmup-track {
+  margin-top: 22px;
+  height: 10px;
+  border-radius: 999px;
+  background: #e2e8f0;
+  overflow: hidden;
+}
+.warmup-bar {
+  height: 100%;
+  width: 0;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #2563eb, #60a5fa);
+  transition: width 0.2s ease;
+}
+.warmup-meta {
+  margin-top: 10px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12px;
+  color: #64748b;
+}
+#warmup-pct {
+  font-weight: 800;
+  color: #2563eb;
+  font-variant-numeric: tabular-nums;
+}
+.warmup-skip {
+  margin-top: 20px;
+}
 /* 日期选择输入:默认屏外隐藏(showPicker 要求元素已渲染),
    不支持 showPicker 的浏览器回退内联展示 */
 .expiry-input-offscreen {
@@ -242,6 +322,38 @@ body {
   pointer-events: auto;
 }
 /* 顶栏“每行列数”自定义下拉控件(深色面板,与顶栏风格统一) */
+/* 类型快捷筛选:分段 chips,贴搜索框左侧;激活项实心白底蓝字,一眼可辨 */
+.type-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.14);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+}
+.tf-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 11px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.88);
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+  white-space: nowrap;
+}
+.tf-chip i { font-size: 11px; }
+.tf-chip:hover { background: rgba(255, 255, 255, 0.18); color: #fff; }
+.tf-chip.active {
+  background: #fff;
+  color: #2563eb;
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.25);
+}
 /* 搜索框:顶栏半透明胶囊,与列数控件风格一致 */
 .search-control {
   position: relative;
@@ -1687,6 +1799,9 @@ body.select-mode .card-actions { display: none; }
     min-width: 0;
     font-size: 15px; /* ≥16px 可避免 iOS 聚焦时自动放大页面,15px 取折中 */
   }
+  /* 筛选 chips 在抽屉里整行铺开,四段均分,拇指好点 */
+  .mobile-search .type-filter { width: 100%; margin-top: 8px; }
+  .mobile-search .tf-chip { flex: 1; justify-content: center; padding: 8px 4px; }
 
   /* 批量操作条:抬到导航上方,按钮收成图标(屏宽放不下文字) */
   .batch-bar {
