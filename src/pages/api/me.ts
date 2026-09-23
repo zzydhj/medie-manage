@@ -1,5 +1,5 @@
 import type { APIRoute } from 'astro';
-import { listOrgs, getOrg, getUserById } from '../../lib/db';
+import { listOrgs, getOrg, getUserById, orgExpired } from '../../lib/db';
 import { getEnv, json } from '../../lib/api';
 
 // 返回当前登录用户信息;超级管理员额外返回可切换的公司列表及其默认作用域
@@ -30,10 +30,13 @@ export const GET: APIRoute = async (context) => {
       new URL(context.request.url).searchParams.get('orgId');
     const active = requested && orgs.some((o) => o.id === requested) ? requested : orgs[0]?.id ?? null;
     payload.activeOrgId = active;
+    payload.orgExpired = false; // 超管不受会员到期限制
   } else if (user.orgId) {
     const org = await getOrg(env.DB, user.orgId);
     payload.org = org;
     payload.activeOrgId = user.orgId;
+    // 会员状态:客户端据此在点功能时弹续费大弹窗(浏览不受影响)
+    payload.orgExpired = orgExpired(org?.expires_at);
   }
 
   return json(payload);

@@ -33,6 +33,7 @@ interface Me {
   orgs?: Org[];
   org?: Org;
   activeOrgId: string | null;
+  orgExpired?: boolean; // 服务端判定:所属公司会员已到期(可浏览不可操作)
 }
 
 // ---------------- 全局状态 ----------------
@@ -129,6 +130,13 @@ function openModal(id: string) {
 }
 function closeModal(id: string) {
   $(`#${id}`)?.classList.remove('open');
+}
+/** 会员到期拦截:到期公司账号能看不能动,点任何功能统一弹续费大弹窗;
+ *  服务端 middleware 对写请求另有 403 兜底,正常走不到 */
+function expiryGuard(): boolean {
+  if (!ME?.orgExpired) return false;
+  openModal('expiry-modal');
+  return true;
 }
 document.addEventListener('click', (e) => {
   const t = e.target as HTMLElement;
@@ -244,7 +252,10 @@ function bindHeader() {
   $('#sidebar-overlay')?.addEventListener('click', () => toggleSidebarDrawer(false));
 
   // 新增一级菜单
-  $('#add-root-menu')?.addEventListener('click', () => openMenuModal(null, ''));
+  $('#add-root-menu')?.addEventListener('click', () => {
+    if (expiryGuard()) return;
+    openMenuModal(null, '');
+  });
 }
 
 // ---------------- 手机端:底部导航 / 搜索抽屉 / 账户 sheet ----------------
@@ -927,6 +938,7 @@ function bindMenuTree() {
       if (btn) {
         e.stopPropagation();
         const act = btn.dataset.act;
+        if (expiryGuard()) return;
         if (act === 'add-child') openMenuModal(id, '');
         else if (act === 'edit-menu') {
           const m = findMenu(MENUS, id);
@@ -1011,6 +1023,11 @@ function bindMenuTree() {
           delayOnTouchOnly: true,
           fallbackOnBody: true,
           onEnd: async (evt) => {
+            // 到期公司:禁拖拽排序,还原 DOM 并弹续费弹窗
+            if (expiryGuard()) {
+              renderSidebar();
+              return;
+            }
             const id = evt.item.dataset.id!;
             const toList = evt.to as HTMLElement;
             const parentId = toList.dataset.parent || null;
@@ -1466,6 +1483,7 @@ function updateBatchBar() {
  * asZip=true 时改为在浏览器里打包成一个 ZIP(被拦截时的备选)。
  */
 async function batchDownload(asZip: boolean) {
+  if (expiryGuard()) return;
   const items = pickedItems();
   if (!items.length) return toast('请先勾选素材', true);
   const btn = $(asZip ? '#batch-zip' : '#batch-download') as HTMLButtonElement | null;
@@ -1517,6 +1535,7 @@ async function batchDownload(asZip: boolean) {
 async function batchShare() {
   const items = pickedItems();
   if (!items.length) return toast('请先勾选素材', true);
+  if (expiryGuard()) return;
   if (!navigator.share) return toast('当前浏览器不支持分享,请改用下载', true);
   const btn = $('#batch-share') as HTMLButtonElement | null;
   const html = btn?.innerHTML ?? '';
@@ -1605,6 +1624,7 @@ function reportBatch(done: string, ok: number, failed: { title: string; msg: str
 
 /** 批量删除:二次确认 → 逐个调 DELETE(服务端清理 R2 + 数据库)→ 刷新 */
 async function batchDelete() {
+  if (expiryGuard()) return;
   const items = pickedItems();
   if (!items.length) return toast('请先勾选素材', true);
   if (!confirm(`确定删除所选 ${items.length} 个素材?此操作不可恢复。`)) return;
@@ -1621,6 +1641,7 @@ async function batchDelete() {
 
 /** 打开批量移动弹窗:填充分组下拉,若所选同属一个分组则默认选中它 */
 function openBatchMoveModal() {
+  if (expiryGuard()) return;
   const items = pickedItems();
   if (!items.length) return toast('请先勾选素材', true);
   const sel = $('#batch-move-menu') as HTMLSelectElement;
@@ -1642,6 +1663,7 @@ function openBatchMoveModal() {
 
 /** 批量移动:逐个 PATCH menuId(与单个换分组同一接口)→ 刷新 */
 async function batchMove() {
+  if (expiryGuard()) return;
   const items = pickedItems();
   if (!items.length) return toast('请先勾选素材', true);
   const menuId = ($('#batch-move-menu') as HTMLSelectElement).value;
@@ -1694,6 +1716,7 @@ function bindGrid() {
   document.querySelectorAll<HTMLElement>('[data-act="download"]').forEach((b) => {
     b.addEventListener('click', (e) => {
       e.stopPropagation();
+      if (expiryGuard()) return;
       const url = b.dataset.url!;
       window.location.href = `${url}${url.includes('?') ? '&' : '?'}download=1`;
     });
@@ -1702,6 +1725,7 @@ function bindGrid() {
   document.querySelectorAll<HTMLElement>('[data-act="copy-image"]').forEach((b) => {
     b.addEventListener('click', async (e) => {
       e.stopPropagation();
+      if (expiryGuard()) return;
       const icon = b.querySelector('i');
       const btn = b as HTMLButtonElement;
       // 大图取回要几秒:点击瞬间先给转圈+提示,避免以为没反应/重复点
@@ -1727,6 +1751,7 @@ function bindGrid() {
   document.querySelectorAll<HTMLElement>('[data-act="share-item"]').forEach((b) => {
     b.addEventListener('click', async (e) => {
       e.stopPropagation();
+      if (expiryGuard()) return;
       const icon = b.querySelector('i');
       const restore = () => {
         if (icon) icon.className = 'fa-solid fa-share-nodes';
@@ -1754,6 +1779,7 @@ function bindGrid() {
     b.addEventListener('click', async (e) => {
       e.stopPropagation();
       closeCardMenus();
+      if (expiryGuard()) return;
       if (!confirm('确定删除该素材?此操作不可恢复。')) return;
       try {
         await api(`/api/items/${b.dataset.id}`, { method: 'DELETE' });
@@ -1768,6 +1794,7 @@ function bindGrid() {
   document.querySelectorAll<HTMLElement>('[data-act="fav"]').forEach((b) => {
     b.addEventListener('click', async (e) => {
       e.stopPropagation();
+      if (expiryGuard()) return;
       const id = b.dataset.id!;
       const on = !FAVORITES.has(id);
       const icon = b.querySelector('i');
@@ -1839,6 +1866,7 @@ function bindGrid() {
     b.addEventListener('click', (e) => {
       e.stopPropagation();
       closeCardMenus();
+      if (expiryGuard()) return;
       openItemEditModal(b.dataset.id!);
     });
   });
@@ -1858,6 +1886,7 @@ function bindGrid() {
       } else {
         const url = t.dataset.preview || '';
         if (url) {
+          if (expiryGuard()) return;
           window.location.href = `${url}${url.includes('?') ? '&' : '?'}download=1`;
           toast('该格式不支持在线预览,已开始下载');
         }
@@ -1887,6 +1916,11 @@ function bindGrid() {
       delayOnTouchOnly: true,
       filter: '.add-card, .empty-hint',
       onEnd: async (evt) => {
+        // 到期公司:禁拖拽排序,还原 DOM 并弹续费弹窗
+        if (expiryGuard()) {
+          renderGrid();
+          return;
+        }
         const id = evt.item.dataset.id;
         if (!id || !selectedMenuId) return;
         // 计算新索引(排除 add-card 占位)
@@ -2156,6 +2190,7 @@ function initLightbox() {
     const dlBtn = target.closest('[data-act="lb-download"]');
     if (dlBtn) {
       e.stopPropagation();
+      if (expiryGuard()) return;
       const u = (dlBtn as HTMLElement).dataset.url || '';
       if (u) window.location.href = `${u}${u.includes('?') ? '&' : '?'}download=1`;
       return;
@@ -2303,6 +2338,7 @@ function initColControl() {
   menu.querySelectorAll('.cols-option').forEach((o: Element) => {
     (o as HTMLElement).addEventListener('click', (e: MouseEvent) => {
       e.stopPropagation();
+      if (expiryGuard()) return;
       const n = parseInt((o as HTMLElement).dataset.cols || '6', 10) || 6;
       applyCols(n);
       setActive(n);
@@ -2358,6 +2394,7 @@ let batchMode = false;
 let itemModalSeq = 0;
 
 function openItemModal() {
+  if (expiryGuard()) return;
   if (!selectedMenuId) return toast('请先在左侧选择一个菜单', true);
   pendingUpload = null;
   batchMode = false;
@@ -2792,6 +2829,7 @@ async function compressImageIfNeeded(
 
 /** 给无缩略图的老图片补生成:拉原图 → 本地生成 → 上传 → 回写卡片。管理员一次性操作 */
 async function backfillThumbs(): Promise<void> {
+  if (expiryGuard()) return;
   while (HAS_MORE) await loadMore(); // 分页后先加载全量,再找出缺缩略图的
   const targets = ITEMS.filter((i) => i.type === 'image' && !i.thumb_url);
   if (!targets.length) return toast('当前公司的图片都已有缩略图');

@@ -155,6 +155,32 @@ body {
   background: #eef4ff;
   border-color: #c9dcfc;
 }
+/* ===== 会员到期续费大弹窗:居中卡片+金皇冠+大标题,点任何功能时弹 ===== */
+.expiry-modal-box {
+  max-width: 340px;
+  padding: 38px 30px 28px;
+  text-align: center;
+}
+.expiry-modal-icon {
+  font-size: 46px;
+  color: #f59e0b;
+  filter: drop-shadow(0 4px 14px rgba(245, 158, 11, 0.35));
+}
+.expiry-modal-title {
+  margin-top: 16px;
+  font-size: 22px;
+  font-weight: 900;
+  color: #1f2937;
+}
+.expiry-modal-text {
+  margin-top: 8px;
+  font-size: 14px;
+  color: #64748b;
+}
+.expiry-modal-btn {
+  width: 100%;
+  margin-top: 24px;
+}
 /* 日期选择输入:默认屏外隐藏(showPicker 要求元素已渲染),
    不支持 showPicker 的浏览器回退内联展示 */
 .expiry-input-offscreen {
@@ -475,7 +501,7 @@ body {
 }
 /* 层级缩进 */
 .menu-depth-1 > .menu-row { padding-left: 10px; font-weight: 600; color: #1f2937; }
-.menu-depth-2 > .menu-row { padding-left: 28px; font-size: 13px; font-weight: 500; }
+.menu-depth-2 > .menu-row { padding-left: 28px; font-size: 13px; font-weight: 600; }
 .menu-depth-3 > .menu-row { padding-left: 40px; font-size: 12.5px; font-weight: 500; color: #64748b; }
 .menu-depth-4 > .menu-row { padding-left: 52px; font-size: 12px; font-weight: 500; color: #64748b; }
 

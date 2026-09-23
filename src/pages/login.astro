@@ -37,12 +37,6 @@ import Base from '../layouts/Base.astro';
     const btn = document.getElementById('login-btn') as HTMLButtonElement;
     const errBox = document.getElementById('login-error') as HTMLDivElement;
 
-    // 会话因公司会员到期被作废(middleware 跳 /login?expired=1):进页即显续费提示
-    if (new URLSearchParams(window.location.search).get('expired')) {
-      errBox.textContent = '会员已到期,请续费后使用';
-      errBox.classList.remove('hidden');
-    }
-
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
       errBox.classList.add('hidden');
