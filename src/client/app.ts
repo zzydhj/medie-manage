@@ -310,16 +310,11 @@ async function init() {
     enterLockMode();
     return;
   }
-  // 新设备/无缓存首登:立即挂全屏预热进度窗并起跑时间进度(不等首屏),
+  // 新设备/无缓存首登:立即挂全屏进度窗并起跑时间进度(不等首屏),
   // 首屏渲染在弹窗背后照常进行;进度纯时间驱动 ~90s 到 100% 必收窗,
-  // 缓存没刷完则转后台静默继续
-  if (activeOrgId && warmupNeeded(activeOrgId)) {
-    startWarmupUi();
-    await loadContent();
-    maybeWarmup().catch(() => {});
-  } else {
-    await loadContent();
-  }
+  // 真正刷缓存的是 loadContent 末尾启动的后台加载引擎(没刷完转后台静默继续)
+  if (activeOrgId && warmupNeeded(activeOrgId)) startWarmupUi();
+  await loadContent();
 }
 
 function bindHeader() {
@@ -641,6 +636,36 @@ function writePrefetchCache(key: string, d: PageData) {
     // 配额满/隐私模式:静默放弃
   }
 }
+/** 收藏变更后同步缓存层:否则点进「收藏」会命中旧缓存(内存页缓存 / 落盘列表),
+ *  刚收藏的素材不显示。做法:落盘列表乐观改写(点进去立刻可见)+ 内存里的收藏页一律作废
+ *  (下次进入拉一次权威数据替换,不会长期偏离服务端) */
+function patchFavCaches(id: string, on: boolean, it: ItemDTO | null) {
+  if (!activeOrgId) return;
+  const key = `${LIST_CACHE_PREFIX}${activeOrgId}|||fav`;
+  const cached = readListCache(key);
+  const items = cached ? cached.items.filter((x) => x.id !== id) : [];
+  if (on && it) items.unshift(it); // 新收藏排最前:先保证"立刻可见",权威顺序由随后的网络数据纠正
+  try {
+    if (items.length) {
+      const payload: ListCache = {
+        items,
+        total: Math.max(items.length, FAV_COUNT), // 缓存被淘汰过也要留真实总数,否则 HAS_MORE 判错不再加载
+        favorites: [...FAVORITES],
+        ts: Date.now(),
+      };
+      localStorage.setItem(key, JSON.stringify(payload));
+      touchListRegistry(key);
+    } else {
+      localStorage.removeItem(key);
+    }
+  } catch {
+    // 配额满/隐私模式:忽略,点进收藏走网络
+  }
+  // 内存页缓存里所有收藏视图的页(含类型筛选变体、含后台引擎铺的首屏)作废
+  pageCache.forEach((_, k) => {
+    if (/\|fav\|\d+$/.test(k)) pageCache.delete(k);
+  });
+}
 /** 用上次落的列表立即渲染(刷新秒开);返回是否命中 */
 function paintStaleList(): boolean {
   const key = listKey();
@@ -662,7 +687,9 @@ function paintStaleList(): boolean {
   ITEMS = stale.items;
   TOTAL = stale.total;
   HAS_MORE = ITEMS.length < TOTAL;
-  FAVORITES = new Set(stale.favorites);
+  // 星标以内存 FAVORITES 为准(收藏按钮是乐观更新):只有会话内首次绘制才用缓存打底,
+  // 否则刚点的收藏会被旧缓存回滚(星星灭掉 / 收藏视图少一项)
+  if (!FAVORITES.size && stale.favorites?.length) FAVORITES = new Set(stale.favorites);
   PAGE = Math.max(1, Math.ceil(ITEMS.length / PAGE_SIZE));
   renderGrid();
   animateGridEnterIfNewView();
@@ -722,66 +749,74 @@ async function ensureFill(seq = refreshSeq) {
     appendWindow(w);
   }
 }
-/** 后台静默预载剩余页:首屏填满后尽快把后面内容全量拉进已加载窗口,
- *  菜单打开即全部可见(不再"先 36 个、滚下去等半天")。10 页/波并行,波内同发、
- *  波间让出主线程防长任务;顺序追加保证排序不乱 */
+/** 前台铺满当前视图:首屏替换后把剩余页全量拉进已加载窗口(菜单打开即全部可见,
+ *  不再"先 36 个、滚下去等半天")。10 页/波并行,波间让出主线程防长任务;
+ *  期间持有 bgHold:后台缓存引擎让路,先干用户正在看的事 */
 let preloadSeq = 0;
 function startPreload() {
   const seq = ++preloadSeq;
-  (async () => {
+  bgHold();
+  void (async () => {
     try {
       while (HAS_MORE && PAGE < 60 && seq === preloadSeq) {
         const w = await fetchWindow(PAGE + 1, 10);
         if (seq !== preloadSeq) return; // 用户已切走:作废
         appendWindow(w);
-        await new Promise((r) => setTimeout(r, 0)); // 让出主线程,避免长任务卡交互
+        await sleep(0); // 让出主线程,避免长任务卡交互
       }
       if (seq === preloadSeq) writeListCache(); // 全量窗口落盘,下次刷新秒开
     } catch {
       // 静默失败不骚扰:无限滚动仍可重试
+    } finally {
+      bgRelease();
+      if (seq === preloadSeq) updateGridFooter();
     }
-    if (seq === preloadSeq) updateGridFooter();
   })();
 }
-/** 重置到第一页并重渲染(切菜单/搜索/收藏/刷新列表用) */
+/** 重置到第一页并重渲染(切菜单/搜索/收藏/刷新列表用);
+ *  全程持有 bgHold:前台切换期间后台引擎全停,保证这次列表请求不被抢带宽 */
 async function refreshList() {
   const seq = ++refreshSeq; // 作废之前所有在飞的切换
-  preloadSeq++; // 取消上一轮后台预载
-  deepSeq++; // 取消上一轮深度预载
-  const painted = paintStaleList(); // 上次窗口立即秒开
-  if (!painted) {
-    // 无旧缓存(如首次点筛选 chip):立即清空窗口态再铺骨架屏。
-    // 否则 ITEMS/HAS_MORE/PAGE 还是旧视图的,骨架屏变矮会触发 scroll→loadMore,
-    // 把新筛选的下一页 append 进旧列表 → 图片筛选里混进视频、内容跳动;
-    // 清空后 HAS_MORE=false,loadMore 直接短路,新数据到达前网格只有骨架屏
-    ITEMS = [];
-    TOTAL = 0;
-    HAS_MORE = false;
-    PAGE = 1;
-    renderSkeleton(); // 旧内容一律先换成骨架屏:新数据到达前绝不展示与筛选不符的卡片
+  preloadSeq++; // 取消上一轮铺满
+  bgHold();
+  try {
+    const painted = paintStaleList(); // 上次窗口立即秒开
+    if (!painted) {
+      // 无旧缓存(如首次点筛选 chip):立即清空窗口态再铺骨架屏。
+      // 否则 ITEMS/HAS_MORE/PAGE 还是旧视图的,骨架屏变矮会触发 scroll→loadMore,
+      // 把新筛选的下一页 append 进旧列表 → 图片筛选里混进视频、内容跳动;
+      // 清空后 HAS_MORE=false,loadMore 直接短路,新数据到达前网格只有骨架屏
+      ITEMS = [];
+      TOTAL = 0;
+      HAS_MORE = false;
+      PAGE = 1;
+      renderSkeleton(); // 旧内容一律先换成骨架屏:新数据到达前绝不展示与筛选不符的卡片
+    }
+    // 有旧窗口时并行补到同等规模,替换一次到位;没有则只拉第一页
+    const want = painted ? Math.min(10, Math.max(1, Math.ceil(ITEMS.length / PAGE_SIZE))) : 1;
+    const w = await fetchWindow(1, want);
+    if (seq !== refreshSeq) return; // 用户又切走了:这份结果作废,避免"点A显示B"
+    PAGE = w.pages;
+    ITEMS = w.items;
+    TOTAL = w.total;
+    HAS_MORE = ITEMS.length < TOTAL;
+    if (w.favorites) FAVORITES = new Set(w.favorites);
+    renderGrid();
+    animateGridEnterIfNewView();
+    await ensureFill(seq); // 动画(~420ms)进行中并行补满首屏
+    if (seq !== refreshSeq) return;
+    writeListCache();
+    startPreload(); // 铺满当前视图
+    bgPrioritize(); // 后台引擎:把当前视图的预览字节提到队首(点哪先刷哪)
+  } finally {
+    bgRelease();
   }
-  // 有旧窗口时并行补到同等规模,替换一次到位;没有则只拉第一页
-  const want = painted ? Math.min(10, Math.max(1, Math.ceil(ITEMS.length / PAGE_SIZE))) : 1;
-  const w = await fetchWindow(1, want);
-  if (seq !== refreshSeq) return; // 用户又切走了:这份结果作废,避免"点A显示B"
-  PAGE = w.pages;
-  ITEMS = w.items;
-  TOTAL = w.total;
-  HAS_MORE = ITEMS.length < TOTAL;
-  if (w.favorites) FAVORITES = new Set(w.favorites);
-  renderGrid();
-  animateGridEnterIfNewView();
-  // 动画(~420ms)进行中:并行补满首屏 → 落盘 → 预载后续页 → 深度预取,后台计算与渐变同步跑完
-  await ensureFill(seq);
-  if (seq !== refreshSeq) return;
-  writeListCache();
-  startPreload();
-  scheduleDeepPrefetch();
 }
 async function loadMore() {
   if (loadingMore || !HAS_MORE) return;
   const seq = refreshSeq;
   loadingMore = true;
+  bgHold(); // 滚动加载也是用户任务:后台引擎让路
   updateGridFooter();
   try {
     const w = await fetchWindow(PAGE + 1, 1);
@@ -789,61 +824,10 @@ async function loadMore() {
     appendWindow(w);
     await ensureFill(seq);
   } finally {
+    bgRelease();
     loadingMore = false;
     updateGridFooter();
   }
-}
-// ---------------- 深度预载:空闲 10s 后把其余素材字节拉进 HTTP 缓存(跨刷新/重启保留) ----------------
-let deepTimer: number | undefined;
-let deepSeq = 0;
-const deepDone = new Set<string>();
-function scheduleDeepPrefetch() {
-  window.clearTimeout(deepTimer);
-  deepTimer = window.setTimeout(() => {
-    deepPrefetch().catch(() => {});
-  }, 10000);
-}
-async function deepPrefetch() {
-  if (warmupRunning) return; // 预热期间带宽全让给它:避免 7 路并发把卡片缩略图饿成长期空白
-  if (isMobileViewport()) return; // 移动端省流量:缩略图仍按需懒加载
-  const key = listKey();
-  if (deepDone.has(key)) return;
-  const seq = ++deepSeq;
-  // 1) 元数据拿全:单独翻页,不动已加载窗口
-  let all = ITEMS.slice();
-  let total = TOTAL;
-  let p = PAGE;
-  while (all.length < total && p < 60 && seq === deepSeq) {
-    p++;
-    const d = await api<PageData>(`/api/content?${viewQuery(p)}`);
-    total = d.total;
-    all = all.concat(d.items);
-  }
-  if (seq !== deepSeq) return;
-  deepDone.add(key);
-  // 2) 字节进 HTTP 缓存:缩略图全量;原图仅图片且按 200MB 预算,避免撑爆缓存配额
-  let budget = 200 * 1024 * 1024;
-  const queue: string[] = [];
-  for (const it of all) {
-    if (it.thumb_url) queue.push(it.thumb_url);
-    if (it.type === 'image' && it.file_url && (it.size ?? 0) <= budget) {
-      queue.push(it.file_url);
-      budget -= it.size ?? 0;
-    }
-  }
-  let i = 0;
-  const worker = async () => {
-    while (i < queue.length && seq === deepSeq) {
-      const url = queue[i++];
-      try {
-        const res = await fetch(url);
-        await res.blob(); // 读完 body 才确保写入 HTTP 缓存;已缓存时命中磁盘秒回
-      } catch {
-        // 单个失败忽略,不影响整体
-      }
-    }
-  };
-  await Promise.all([worker(), worker(), worker()]);
 }
 /** 底部状态:还有更多时静默(不满一屏滚不动/满一屏看不见,提示均无意义);加载中转圈;加载完一句结束提示 */
 function updateGridFooter() {
@@ -862,57 +846,300 @@ function updateGridFooter() {
   if (loadingMore) f.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> 加载中…';
   else f.textContent = `已加载全部 ${TOTAL} 个`;
 }
-/** 预取某视图第一页进页缓存:悬停/空闲时调用,切换命中缓存=秒开;
- *  同时落盘 localStorage:刷新后内存缓存清零,点该分组仍能旧窗口秒开再后台替换 */
-function prefetchMenuPage(menuId: string | null, fav: boolean) {
-  if (!activeOrgId) return;
-  // 与 pageCacheKey 对齐:预取假定无搜索词(切菜单会 resetSearch)
-  const view = fav ? 'fav' : menuId ?? '';
-  // 与 pageCacheKey 对齐(无搜索词、无类型筛选):org|q|tf|view|page
-  const key = `${activeOrgId}|||${view}|1`;
-  if (pageCache.has(key)) return;
-  const p = new URLSearchParams({ page: '1', pageSize: String(PAGE_SIZE) });
-  if (fav) p.set('fav', '1');
-  else if (menuId) p.set('menuId', menuId);
-  api<PageData>(`/api/content?${p.toString()}`)
-    .then((d) => {
-      pageCache.set(key, d);
-      writePrefetchCache(`${LIST_CACHE_PREFIX}${activeOrgId}|||${view}`, d);
-    })
-    .catch(() => {});
+// ==================== 后台加载引擎(全站唯一的后台加载逻辑) ====================
+// 需求直译成四条规则;原来并存的预热/深度预载/空闲预取/悬停预取已全部合并到这里:
+//  R1 一条队列刷全站:整库清单 → 每个分组的首屏列表落缓存 → 所有素材的预览字节进 HTTP 缓存
+//  R2 用户点哪 / 悬停哪,哪的排到队首(bgPrioritize)
+//  R3 用户有上传 / 下载 / 预览 / 切视图 / 翻页任务时,引擎全停让路(bgHold / bgRelease)
+//  R4 大文件(老图片没缩略图时卡片挂的原图)走慢车道:单并发,只在快车道刷完且用户空闲时 trickle
+// 抓取一律 priority:'low' + 3 并发:永远排在卡片自身 <img> 之后,不与前台抢带宽
+const BG_FAST_WORKERS = 3; // 快车道并发(缩略图小文件)
+const BG_PLAN_PAGE = 100; // 整库清单分页大小(服务端上限 100)
+const BG_MAX_ITEMS = 5000; // 超大库封顶:清单最多取前 5000 条,其余靠下次重规划补
+const BG_BIG_MAX = 8 * 1024 * 1024; // 单个原图超过 8MB 不进慢车道(留给点开时按需加载)
+const BG_BIG_BUDGET = 600 * 1024 * 1024; // 慢车道总预算:防撑爆浏览器缓存配额
+const BG_SEED_PAGE_CACHE_MAX = 300; // 内存页缓存最多铺到多少个视图(其余靠 localStorage 秒开)
+
+let bgFast: string[] = []; // 快车道队列(缩略图),顺序即优先级
+let bgFastAt = 0;
+let bgSlow: string[] = []; // 慢车道队列(大原图)
+let bgSlowAt = 0;
+let bgViews = new Map<string, string[]>(); // url → 归属视图(''=整库 / menuId / 'fav')
+let bgTotal = 0; // 本轮待抓总数(进度文案用)
+let bgDone = 0;
+let bgBusy = false; // 引擎在跑(规划或抓取):再调用只标 dirty,不并发起第二套
+let bgDirty = false; // 跑的过程中发生过变更(上传/删除/移动/换公司):刷完再来一轮
+let bgUserBusy = 0; // 用户任务计数:>0 时引擎暂停
+let bgUserSince = 0;
+let bgFastWorkers = 0;
+let bgSlowWorkers = 0;
+let bgLastHeal = 0;
+let bgParent = new Map<string, string | null>(); // menuId → parent_id(算素材归属哪些分组视图)
+
+/** 当前视图归属键:与 listKey / pageCacheKey 的 view 段一致(收藏='fav',菜单=id,整库='') */
+function bgScope(): string {
+  return favView ? 'fav' : (selectedMenuId ?? '');
 }
-let prefetchTimer: number | undefined;
-/** 首屏渲染稳定后,后台低速预取收藏+计数>0 的菜单第一页(上限12),不抢首屏带宽 */
-function schedulePrefetch() {
-  window.clearTimeout(prefetchTimer);
+// ---- R3 让路:任何用户任务(上传/下载/分享/预览/切视图/翻页)期间引擎全停 ----
+function bgHold() {
+  bgUserBusy++;
+  if (!bgUserSince) bgUserSince = Date.now();
+}
+function bgRelease() {
+  bgUserBusy = Math.max(0, bgUserBusy - 1);
+  if (!bgUserBusy) bgUserSince = 0;
+}
+/** 浏览器接管的任务(点下载后由下载管理器继续)拿不到结束事件:定时让路 */
+function bgHoldFor(ms: number) {
+  bgHold();
+  window.setTimeout(bgRelease, ms);
+}
+async function bgWaitUser() {
+  while (bgUserBusy > 0) {
+    // 保险丝:异常路径漏了 release 时最多让路 10 分钟,之后引擎自己恢复(不至于永久停摆)
+    if (bgUserSince && Date.now() - bgUserSince > 600_000) {
+      bgUserBusy = 0;
+      bgUserSince = 0;
+      return;
+    }
+    await sleep(250);
+  }
+}
+/** 引擎入口:loadContent 末尾调用(init / 换公司 / 任何增删改之后)。
+ *  一轮 = 规划整库 → 铺各分组缓存 → 排队预览字节 → 抓到队列见底;期间有变更就再来一轮 */
+function bgStart() {
   const org = activeOrgId;
-  const flat: string[] = [];
+  if (!org || ME?.orgExpired) return;
+  if (bgBusy) {
+    bgDirty = true; // 正在跑:不打断,跑完自动补一轮(新上传的素材那时入队)
+    return;
+  }
+  bgBusy = true;
+  void (async () => {
+    try {
+      do {
+        bgDirty = false;
+        await bgPlan(org);
+        if (org !== activeOrgId) return; // 换公司:本轮作废
+        bgSpawn(org);
+        await bgWaitDrained(org);
+      } while (bgDirty && org === activeOrgId);
+      if (org === activeOrgId) bgFinish();
+    } catch {
+      // 网络异常等:静默放弃,下次 loadContent 再试
+    } finally {
+      bgBusy = false;
+      // 本轮因换公司中断:立即为新公司重起一轮(否则新公司要等下次 loadContent 才预热)
+      if (activeOrgId && activeOrgId !== org && !ME?.orgExpired) bgStart();
+    }
+  })();
+}
+async function bgWaitDrained(org: string) {
+  while (
+    org === activeOrgId &&
+    (bgFastWorkers > 0 || bgSlowWorkers > 0 || bgFastAt < bgFast.length || bgSlowAt < bgSlow.length)
+  ) {
+    await sleep(1000);
+  }
+}
+/** R1 第一步:整库清单。逐页拉(pageSize=100),单页失败重试一次、仍败跳过该页——
+ *  一页失败继不 abort 全站(否则其余分组的预览永远刷不到) */
+async function bgPlan(org: string) {
+  bgTotal = 0;
+  bgDone = 0;
+  bgReport();
+  const all: ItemDTO[] = [];
+  let favs: string[] = [];
+  let total = Infinity;
+  const maxPage = Math.ceil(BG_MAX_ITEMS / BG_PLAN_PAGE);
+  for (let page = 1; all.length < total && page <= maxPage; page++) {
+    let d: PageData | null = null;
+    for (let i = 0; i < 2 && !d; i++) {
+      try {
+        d = await api<PageData>(`/api/content?page=${page}&pageSize=${BG_PLAN_PAGE}`);
+      } catch {
+        d = null;
+      }
+    }
+    if (!d) continue;
+    if (org !== activeOrgId) return;
+    total = d.total;
+    if (d.favorites) favs = d.favorites;
+    all.push(...d.items);
+  }
+  if (org !== activeOrgId) return;
+  bgRebuildTree();
+  bgSeedLists(org, all, favs);
+  bgSeedBytes(all, new Set(favs));
+}
+function bgRebuildTree() {
+  const map = new Map<string, string | null>();
   const walk = (ns: MenuNode[]) =>
     ns.forEach((n) => {
-      flat.push(n.id);
+      map.set(n.id, n.parent_id);
       if (n.children?.length) walk(n.children);
     });
   walk(MENUS);
-  // 预取上限与 LRU 对齐(每个只一页小 JSON,400ms 一个不抢带宽),刷新后全部分组都能秒开
-  const queue = flat.filter((id) => (COUNTS[id] ?? 0) > 0).slice(0, 29);
-  let i = 0;
-  const step = () => {
-    if (activeOrgId !== org) return; // 切公司:预取作废
-    if (i === 0) prefetchMenuPage(null, true);
-    else prefetchMenuPage(queue[i - 1], false);
-    i++;
-    if (i <= queue.length) prefetchTimer = window.setTimeout(step, 400);
-  };
-  prefetchTimer = window.setTimeout(step, 1200);
+  bgParent = map;
 }
-// ---------------- 新设备首登预热:一次性把列表元数据 + 缩略图字节灌进缓存 ----------------
+/** 素材归属的分组视图:自身菜单 + 各级祖先(点父级菜单看子树,也要算它) */
+function bgChainOf(menuId: string): string[] {
+  const out: string[] = [];
+  let cur: string | null | undefined = menuId;
+  let guard = 0;
+  while (cur && guard++ < 20) {
+    out.push(cur);
+    cur = bgParent.get(cur) ?? null;
+  }
+  return out;
+}
+/** R1 第二步:用整库清单一次性铺好每个视图的首屏缓存(内存 + localStorage)。
+ *  服务端排序是全局的(sort_order,created_at),清单的任意子集顺序=该视图的顺序,
+ *  所以不必再为每个分组单独发一次请求 */
+function bgSeedLists(org: string, all: ItemDTO[], favs: string[]) {
+  const favSet = new Set(favs);
+  const byView = new Map<string, ItemDTO[]>();
+  const put = (view: string, it: ItemDTO) => {
+    const arr = byView.get(view);
+    if (arr) arr.push(it);
+    else byView.set(view, [it]);
+  };
+  for (const it of all) {
+    put('', it);
+    bgChainOf(it.menu_id).forEach((v) => put(v, it));
+    if (favSet.has(it.id)) put('fav', it);
+  }
+  const cur = bgScope();
+  let seeded = 0;
+  byView.forEach((items, view) => {
+    if (view === cur) return; // 当前视图由前台 writeListCache 维护(窗口可能已铺满 500 条),引擎不覆盖
+    if (!view && MENUS.length) return; // 整库视图只在"没有菜单"时才是真实视图
+    const d: PageData = { items: items.slice(0, PAGE_SIZE), total: items.length, favorites: favs };
+    // 键格式与 pageCacheKey / listKey 对齐:无搜索词、无类型筛选的第一页
+    if (pageCache.size < BG_SEED_PAGE_CACHE_MAX) pageCache.set(`${org}|||${view}|1`, d);
+    // 落盘上限与 LRU 对齐:再多也会被注册表挤掉,白写
+    if (seeded++ < LIST_CACHE_MAX_VIEWS) writePrefetchCache(`${LIST_CACHE_PREFIX}${org}|||${view}`, d);
+  });
+}
+/** R1 第三步 + R2 + R4:排预览字节队列。卡片实际渲染的地址=缩略图;老图片没缩略图时=原图(大文件)。
+ *  大文件走慢车道(当前视图的除外——用户正看着它);移动端只刷缩略图省流量 */
+function bgSeedBytes(all: ItemDTO[], favSet: Set<string>) {
+  const scope = bgScope();
+  const mobile = isMobileViewport();
+  const fast: string[] = [];
+  const slow: string[] = [];
+  const seen = new Set<string>();
+  const views = new Map<string, string[]>();
+  let budget = BG_BIG_BUDGET;
+  for (const it of all) {
+    const big = !it.thumb_url && it.type === 'image'; // 无缩略图的老图片:卡片挂的就是原图
+    const url = it.thumb_url || (it.type === 'image' ? it.file_url : '');
+    if (!url || seen.has(url)) continue;
+    const size = it.size ?? 0;
+    if (big && (mobile || size > BG_BIG_MAX || size > budget)) continue; // 太大/超预算:留给按需加载
+    if (big) budget -= size;
+    seen.add(url);
+    const vs = ['', ...bgChainOf(it.menu_id)];
+    if (favSet.has(it.id)) vs.push('fav');
+    views.set(url, vs);
+    (big && !vs.includes(scope) ? slow : fast).push(url);
+  }
+  bgViews = views;
+  bgFast = fast;
+  bgFastAt = 0;
+  bgSlow = slow;
+  bgSlowAt = 0;
+  bgDone = 0;
+  bgTotal = fast.length + slow.length;
+  bgPrioritize();
+  bgReport();
+}
+/** R2:把属于某视图(默认当前视图)的预览提到快车道队首——点哪 / 悬停哪就先刷哪 */
+function bgPrioritize(scope = bgScope()) {
+  const rest = bgFast.slice(bgFastAt);
+  if (!rest.length) return;
+  const head: string[] = [];
+  const tail: string[] = [];
+  for (const u of rest) (bgViews.get(u)?.includes(scope) ? head : tail).push(u);
+  bgFast = head.concat(tail);
+  bgFastAt = 0;
+}
+function bgSpawn(org: string) {
+  // 换公司重规划后,旧公司的工人可能还卡在 await fetch 里没退出。先把计数归零再拉起一组新工人,
+  // 保证新公司一定拿到满编;旧工人退出时用 Math.max 兜底,不会把计数打成负数
+  bgFastWorkers = 0;
+  bgSlowWorkers = 0;
+  while (bgFastWorkers < BG_FAST_WORKERS) {
+    bgFastWorkers++;
+    void bgRunFast(org).finally(() => {
+      bgFastWorkers = Math.max(0, bgFastWorkers - 1);
+    });
+  }
+  bgSlowWorkers = 1;
+  void bgRunSlow(org).finally(() => {
+    bgSlowWorkers = Math.max(0, bgSlowWorkers - 1);
+  });
+}
+async function bgRunFast(org: string) {
+  for (;;) {
+    if (activeOrgId !== org) return; // 换公司:旧工人立即退出,不碰新公司的队列
+    await bgWaitUser(); // R3:用户任务优先
+    if (bgFastAt >= bgFast.length) return;
+    await bgFetch(bgFast[bgFastAt++]);
+  }
+}
+async function bgRunSlow(org: string) {
+  for (;;) {
+    if (activeOrgId !== org) return; // 换公司:旧工人立即退出
+    if (bgSlowAt >= bgSlow.length) return;
+    // R4:快车道没刷完或用户有任务时原地等——大文件绝不挤占缩略图带宽
+    if (bgFastAt < bgFast.length || bgUserBusy > 0) {
+      await sleep(1500);
+      continue;
+    }
+    await bgFetch(bgSlow[bgSlowAt++]);
+  }
+}
+async function bgFetch(url: string) {
+  try {
+    const res = await fetch(url, { priority: 'low' }); // 低优先级:卡片自身的 <img> 永远先走
+    await res.blob(); // 读完 body 才写进 HTTP 缓存(immutable 一年,跨刷新/重启保留)
+  } catch {
+    // 单个失败忽略:下一轮规划会重排重试
+  }
+  bgDone++;
+  if (bgDone % 8 === 0) bgReport();
+  const now = Date.now();
+  if (now - bgLastHeal > 4000) {
+    bgLastHeal = now;
+    healPendingThumbs(); // 缓存已暖:顺手把网格里还空着的图补上
+  }
+}
+// ---------------- 新设备首登进度窗:纯 UI,真正干活的是上面的后台加载引擎 ----------------
 // 首次打开(本机无任何列表缓存)时全屏弹窗:进度条纯时间驱动(0 起跑,~90 秒到 100%),
-// 到 100% 必收窗——缓存没刷完就转后台静默继续,做完落 done 标记,下次不再打扰
-const WARMUP_PREFIX = 'mm-warmup-'; // + orgId:done=已完成 / skip=用户跳过或到点关窗(不再弹大窗)
-const WARMUP_MAX_ITEMS = 2000; // 超大库封顶:先预热前 2000 个,其余靠日常深度预载补
+// 到 100% 必收窗——引擎没刷完就转后台静默继续,刷完落 done 标记,下次不再打扰
+const WARMUP_PREFIX = 'mm-warmup-'; // + orgId:done=已刷完 / skip=用户跳过或到点关窗(不再弹大窗)
 const WARMUP_UI_MS = 90_000; // 进度窗固定时长:~1.1%/秒,90 秒到 100%
-let warmupRunning = false;
 let warmupUiTimer: number | undefined;
+/** 进度窗文案:引擎报数(进度条本身纯时间驱动,与这里无关);窗已收就不动 DOM */
+function bgReport() {
+  if (warmupUiTimer === undefined) return;
+  const label = $('#warmup-label');
+  if (!label) return;
+  label.textContent = bgTotal
+    ? `正在缓存素材预览 ${Math.min(bgDone, bgTotal)} / ${bgTotal}`
+    : '正在整理素材清单…';
+}
+/** 全站刷完:落 done 标记(下次不再弹进度窗)+ 自愈一遍还空着的缩略图 */
+function bgFinish() {
+  healPendingThumbs();
+  if (!activeOrgId || !bgTotal) return;
+  try {
+    localStorage.setItem(`${WARMUP_PREFIX}${activeOrgId}`, 'done');
+  } catch {
+    // localStorage 不可用时忽略
+  }
+}
 function warmupNeeded(orgId: string): boolean {
   if (localStorage.getItem(`${WARMUP_PREFIX}${orgId}`)) return false;
   try {
@@ -960,124 +1187,23 @@ function closeWarmupUi() {
     }
   }
 }
-/** 自愈空白缩略图:网格里卡住没加载/加载失败的 img 强制重置 src 重拉一次(每个 img 限一次)。
- *  预热期间卡片缩略图请求可能被重渲染取消、或被并发带宽饿死,卡片就永久空白;
- *  自愈时 HTTP 缓存通常已暖,重置后瞬间完成 */
+/** 自愈空白缩略图:网格里迟迟没出图的卡片换新元素重拉一次(每个 img 限一次)。
+ *  两遍制:第一遍只打标记(给它在飞请求正常加载的时间,不打断),第二遍(≥4 秒后)还空着才换;
+ *  换元素而不是改 src:改 src='' 会触发 onerror,把「缩略图→原图→无预览」回退链提前用掉 */
 function healPendingThumbs() {
   document.querySelectorAll<HTMLImageElement>('#card-grid img').forEach((img) => {
     if (img.dataset.healed) return;
-    if (img.complete && img.naturalWidth > 0) return; // 已正常加载,不动
+    if (img.complete && img.naturalWidth > 0) return; // 已正常出图,不动
     const s = img.getAttribute('src');
     if (!s) return;
-    img.dataset.healed = '1';
-    img.src = '';
-    img.src = s; // 先空再还原:强制重新加载,缓存已暖=瞬间完成
+    if (!img.dataset.healSeen) {
+      img.dataset.healSeen = '1';
+      return;
+    }
+    const fresh = img.cloneNode(true) as HTMLImageElement; // 带上 src/onerror/data-fb 全链
+    fresh.dataset.healed = '1';
+    img.replaceWith(fresh); // 缓存已暖=瞬间完成;真坏了由新元素自己的 onerror 走回退链
   });
-}
-/** 实际预热工作:整库清单落页缓存 + 各菜单第一页落盘 + 全库缩略图字节灌 HTTP 缓存;
- *  进度窗已收(跳过/到点)也不中断,静默刷完落 done 标记 */
-async function maybeWarmup() {
-  if (!activeOrgId || warmupRunning) return;
-  if (ME?.orgExpired || !warmupNeeded(activeOrgId)) return;
-  warmupRunning = true;
-  const org = activeOrgId;
-  const report = (done: number, total: number) => {
-    // 弹窗还开着才更新计数文案(进度条本身纯时间驱动,与这里无关)
-    if (warmupUiTimer !== undefined && total) {
-      const label = $('#warmup-label');
-      if (label) label.textContent = `正在缓存素材预览 ${done} / ${total}`;
-    }
-  };
-  try {
-    // 1) 元数据全量:整库逐页拉清单(URL 与 pageCacheKey 同格式,顺带进页缓存),
-    //    收藏 + 各菜单第一页落盘 → 切分组秒开
-    const all: ItemDTO[] = [];
-    let page = 0;
-    let totalItems = Infinity;
-    while (all.length < totalItems && page < 60) {
-      page++;
-      let d: PageData | null = null;
-      for (let attempt = 0; attempt < 2 && !d; attempt++) {
-        try {
-          d = await api<PageData>(`/api/content?page=${page}&pageSize=${PAGE_SIZE}`);
-        } catch {
-          d = null; // 单页失败(冷启动/瞬时):重试一次,仍败则跳过该页
-        }
-      }
-      if (!d) continue; // 不因一页失败 abort 整个预热:否则其余菜单的缩略图永远不缓存
-      pageCache.set(`${activeOrgId}|||${page}`, d); // 整库视图页缓存:首屏翻页直接命中
-      totalItems = d.total;
-      all.push(...d.items);
-      report(all.length, Math.min(totalItems, WARMUP_MAX_ITEMS));
-      if (org !== activeOrgId) return; // 切公司:预热作废
-    }
-    await prefetchMenuPage(null, true);
-    const flat: string[] = [];
-    const walk = (ns: MenuNode[]) =>
-      ns.forEach((n) => {
-        flat.push(n.id);
-        if (n.children?.length) walk(n.children);
-      });
-    walk(MENUS);
-    // 逐菜单串行落第一页:并发齐发几十请求易打爆冷启动 Worker 出 500,反过来 abort 预热
-    for (const id of flat) {
-      if (org !== activeOrgId) return;
-      await prefetchMenuPage(id, false);
-    }
-    // 2) 缩略图字节进 HTTP 缓存(immutable,跨刷新/重启保留)→ 卡片不再有白占位
-    const seen = new Set<string>();
-    const queue: string[] = [];
-    const rest: string[] = [];
-    // 卡片实际渲染的预览地址:缩略图优先;老图片无缩略图时挂的是原图→预热必须缓存原图字节
-    const previewUrl = (it: ItemDTO) => it.thumb_url || (it.type === 'image' ? it.file_url : '');
-    const curUrls = new Set(ITEMS.map(previewUrl).filter((u) => !!u));
-    let imgBudget = 400 * 1024 * 1024; // 无缩略图老图片的原图预算:超出的留给按需懒加载+深度预载
-    for (const it of all.slice(0, WARMUP_MAX_ITEMS)) {
-      const url = previewUrl(it);
-      if (!url || seen.has(url)) continue;
-      seen.add(url);
-      if (!it.thumb_url && it.type === 'image') {
-        const sz = it.size ?? 0;
-        if (sz > imgBudget) continue;
-        imgBudget -= sz;
-      }
-      // 当前视图排最前(用户正看的先不白),其余全库(所有菜单)随后
-      (curUrls.has(url) ? queue : rest).push(url);
-    }
-    queue.push(...rest);
-    const total = queue.length;
-    let done = 0;
-    let qi = 0;
-    const worker = async () => {
-      while (qi < queue.length) {
-        const url = queue[qi++];
-        try {
-          const res = await fetch(url);
-          await res.blob(); // 读完 body 才确保写入 HTTP 缓存
-        } catch {
-          // 单个失败忽略,不影响整体
-        }
-        done++;
-        report(done, total);
-      }
-    };
-    // 4 并发:比日常预载激进(此时用户就在等),又不至于把浏览器连接池占死
-    await Promise.all([worker(), worker(), worker(), worker()]);
-    localStorage.setItem(`${WARMUP_PREFIX}${org}`, 'done');
-    healPendingThumbs(); // 缓存已暖:网格还卡着的空白缩略图强制重拉,瞬间完成
-  } catch {
-    // 网络异常等:静默放弃,不打扰用户;标记 skip 避免每次刷新都弹大窗
-    try {
-      localStorage.setItem(`${WARMUP_PREFIX}${org}`, 'skip');
-    } catch {
-      // localStorage 不可用时忽略
-    }
-    healPendingThumbs();
-    closeWarmupUi();
-  } finally {
-    warmupRunning = false;
-    scheduleDeepPrefetch(); // 预热结束(成功或失败)再排原图深度预载:预热期间被抑制
-  }
 }
 /** 无缓存切换时立即铺骨架屏:视觉"瞬间有响应",避免空白等待感 */
 function renderSkeleton() {
@@ -1142,9 +1268,9 @@ async function loadContent() {
   }
   saveView(); // 把当前生效视图落盘,供下次刷新恢复
   renderSidebar(); // 树先出来:新建/改名菜单不必等素材页往返
-  await refreshList(); // 内部:旧窗口秒开 → 并行拉新窗口替换 → 后台预载 → 落盘
+  await refreshList(); // 内部:旧窗口秒开 → 并行拉新窗口替换 → 铺满当前视图 → 落盘
   if (isAdmin) $('#add-root-menu')?.classList.remove('hidden');
-  schedulePrefetch(); // 首屏稳定后后台预取各菜单第一页,让后续切换命中缓存
+  bgStart(); // 后台加载引擎:整库清单 → 铺各分组首屏缓存 → 全站预览字节入缓存(用户任务自动让路)
 }
 
 function findMenu(nodes: MenuNode[], id: string): MenuNode | null {
@@ -1281,10 +1407,10 @@ let menuSortables: Sortable[] = [];
 function bindMenuTree() {
   // 展开/选中 + 管理员按钮
   document.querySelectorAll<HTMLElement>('.menu-row').forEach((row) => {
-    // 悬停预取第一页:切过去时命中缓存=秒开(移动端无 hover,靠空闲预取兜底)
+    // 悬停即把该分组的预览提到后台引擎队首(R2:悬停哪先刷哪);
+    // 列表首屏已由引擎 bgSeedLists 预铺,切过去直接命中缓存=秒开
     row.addEventListener('mouseenter', () => {
-      if (row.dataset.fav) prefetchMenuPage(null, true);
-      else if (row.dataset.id) prefetchMenuPage(row.dataset.id, false);
+      bgPrioritize(row.dataset.fav ? 'fav' : (row.dataset.id ?? ''));
     });
     row.addEventListener('click', (e) => {
       const btn = (e.target as HTMLElement).closest('[data-act]') as HTMLElement | null;
@@ -1619,23 +1745,28 @@ async function copyImageToClipboard(url: string): Promise<void> {
   if (typeof ClipboardItem === 'undefined' || !navigator.clipboard?.write) {
     throw new Error('当前浏览器不支持复制图片,请下载后使用');
   }
-  const res = await fetch(url);
-  if (!res.ok) throw new Error('获取图片失败');
-  let blob = await res.blob();
-  if (blob.type !== 'image/png') {
-    const bmp = await createImageBitmap(blob);
-    const canvas = document.createElement('canvas');
-    canvas.width = bmp.width;
-    canvas.height = bmp.height;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) throw new Error('canvas 不可用');
-    ctx.drawImage(bmp, 0, 0);
-    bmp.close?.();
-    blob = await new Promise<Blob>((resolve, reject) =>
-      canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('转 PNG 失败'))), 'image/png'),
-    );
+  bgHold(); // 用户复制要取原图:后台引擎让路
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error('获取图片失败');
+    let blob = await res.blob();
+    if (blob.type !== 'image/png') {
+      const bmp = await createImageBitmap(blob);
+      const canvas = document.createElement('canvas');
+      canvas.width = bmp.width;
+      canvas.height = bmp.height;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) throw new Error('canvas 不可用');
+      ctx.drawImage(bmp, 0, 0);
+      bmp.close?.();
+      blob = await new Promise<Blob>((resolve, reject) =>
+        canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('转 PNG 失败'))), 'image/png'),
+      );
+    }
+    await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+  } finally {
+    bgRelease();
   }
-  await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
 }
 // 各类型的通用 MIME 与探测文件名:仅用于渲染前同步判断系统是否允许分享该类型
 const MIME_BY_TYPE: Record<ItemType, string> = {
@@ -1667,44 +1798,49 @@ async function fetchItemFile(
   const cached = SHARE_FILE_CACHE.get(it.id);
   if (cached) return cached;
 
-  const res = await fetch(it.file_url);
-  if (!res.ok) throw new Error(`「${it.title}」获取失败(${res.status})`);
+  bgHold(); // 用户下载/分享大文件:后台缓存引擎让路
+  try {
+    const res = await fetch(it.file_url);
+    if (!res.ok) throw new Error(`「${it.title}」获取失败(${res.status})`);
 
-  const total = Number(res.headers.get('Content-Length') || 0);
-  let blob: Blob;
-  if (onProgress && res.body && total > 0) {
-    // 流式读取,边下边回调(仅在整数百分比变化时触发,避免刷屏)
-    const reader = res.body.getReader();
-    const chunks: Uint8Array[] = [];
-    let loaded = 0;
-    let lastPct = -1;
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (!value) continue;
-      chunks.push(value);
-      loaded += value.length;
-      const pct = Math.round((loaded / total) * 100);
-      if (pct !== lastPct) {
-        lastPct = pct;
-        onProgress(loaded, total);
+    const total = Number(res.headers.get('Content-Length') || 0);
+    let blob: Blob;
+    if (onProgress && res.body && total > 0) {
+      // 流式读取,边下边回调(仅在整数百分比变化时触发,避免刷屏)
+      const reader = res.body.getReader();
+      const chunks: Uint8Array[] = [];
+      let loaded = 0;
+      let lastPct = -1;
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (!value) continue;
+        chunks.push(value);
+        loaded += value.length;
+        const pct = Math.round((loaded / total) * 100);
+        if (pct !== lastPct) {
+          lastPct = pct;
+          onProgress(loaded, total);
+        }
       }
+      blob = new Blob(chunks as unknown as BlobPart[], { type: res.headers.get('Content-Type') || MIME_BY_TYPE[it.type] });
+    } else {
+      blob = await res.blob();
     }
-    blob = new Blob(chunks as unknown as BlobPart[], { type: res.headers.get('Content-Type') || MIME_BY_TYPE[it.type] });
-  } else {
-    blob = await res.blob();
-  }
 
-  const file = new File([blob], it.filename || it.title, {
-    type: blob.type || MIME_BY_TYPE[it.type],
-  });
-  if (shareCacheBytes + file.size > SHARE_CACHE_MAX) {
-    SHARE_FILE_CACHE.clear();
-    shareCacheBytes = 0;
+    const file = new File([blob], it.filename || it.title, {
+      type: blob.type || MIME_BY_TYPE[it.type],
+    });
+    if (shareCacheBytes + file.size > SHARE_CACHE_MAX) {
+      SHARE_FILE_CACHE.clear();
+      shareCacheBytes = 0;
+    }
+    SHARE_FILE_CACHE.set(it.id, file);
+    shareCacheBytes += file.size;
+    return file;
+  } finally {
+    bgRelease();
   }
-  SHARE_FILE_CACHE.set(it.id, file);
-  shareCacheBytes += file.size;
-  return file;
 }
 
 /** 系统分享:先取文件本体(大文件边下边报进度/预估剩余时间)→ File → 原生分享面板 */
@@ -1867,6 +2003,7 @@ async function batchDownload(asZip: boolean) {
   const btn = $(asZip ? '#batch-zip' : '#batch-download') as HTMLButtonElement | null;
   const html = btn?.innerHTML ?? '';
   if (btn) btn.disabled = true;
+  bgHold(); // 批量下载(zip 逐个 fetch 原图):后台引擎让路
   try {
     if (!asZip) {
       for (let i = 0; i < items.length; i++) {
@@ -1904,6 +2041,7 @@ async function batchDownload(asZip: boolean) {
   } catch (err) {
     toast((err as Error).message || '下载失败', true);
   } finally {
+    bgRelease();
     if (btn) btn.innerHTML = html;
     updateBatchBar();
   }
@@ -2069,6 +2207,7 @@ function sleep(ms: number) {
 
 /** 触发单个文件下载:同源 + 服务端 Content-Disposition,点 a 标签不会跳走页面 */
 function triggerDownload(url: string, name: string) {
+  bgHoldFor(15000); // 浏览器接管下载无完成事件:定时让路 ~15s,期间后台引擎不抢带宽
   const a = document.createElement('a');
   a.href = `${url}${url.includes('?') ? '&' : '?'}download=1`;
   a.download = name;
@@ -2096,6 +2235,7 @@ function bindGrid() {
       e.stopPropagation();
       if (expiryGuard()) return;
       const url = b.dataset.url!;
+      bgHoldFor(15000); // 浏览器接管下载:定时让路
       window.location.href = `${url}${url.includes('?') ? '&' : '?'}download=1`;
     });
   });
@@ -2182,20 +2322,22 @@ function bindGrid() {
         b.title = v ? '取消收藏' : '收藏';
       };
       // 乐观更新:先改本地状态与样式,失败再回滚
+      const it = ITEMS.find((i) => i.id === id) ?? null;
       if (on) FAVORITES.add(id);
       else FAVORITES.delete(id);
       FAV_COUNT += on ? 1 : -1;
       paint(on);
       updateFavCount();
+      // 同步收藏视图缓存:否则切到「收藏」会命中旧缓存,刚收藏的素材不显示(用户反馈的问题)
+      patchFavCaches(id, on, it);
       try {
         await api('/api/favorites', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ itemId: id, on }),
         });
-        // 收藏视图下加/取消收藏会改变卡片列表,重新拉第一页
+        // 正处于收藏视图:列表本身变了,重拉第一页拿权威顺序(patchFavCaches 已作废收藏页缓存)
         if (favView && !searchQuery.trim()) {
-          clearPageCache();
           refreshList().catch((er) => toast((er as Error).message, true));
         }
       } catch (err) {
@@ -2204,6 +2346,7 @@ function bindGrid() {
         FAV_COUNT += on ? -1 : 1;
         paint(!on);
         updateFavCount();
+        patchFavCaches(id, !on, it); // 回滚缓存,与回滚的星标保持一致
         toast((err as Error).message, true);
       }
     });
@@ -2551,10 +2694,17 @@ async function loadOfficePreview(item: PreviewItem, myIndex: number) {
   }
 }
 
+// 灯箱开着期间(图片/视频在线拉流)持有 bgHold:后台引擎让路,不抢预览带宽;
+// 用标志位保证 open/close 严格配对(重复开/未开先关都不会计数错位)
+let lightboxHeld = false;
 function openLightboxAt(index: number) {
   if (!PREVIEW_LIST.length) return;
   previewDir = 'in';
   previewIndex = ((index % PREVIEW_LIST.length) + PREVIEW_LIST.length) % PREVIEW_LIST.length;
+  if (!lightboxHeld) {
+    bgHold();
+    lightboxHeld = true;
+  }
   renderPreview();
   openModal('lightbox');
 }
@@ -2571,6 +2721,10 @@ function closeLightbox() {
   const body = $('#lightbox-body');
   if (body) body.innerHTML = ''; // 清空以停止视频播放
   $('#lightbox')?.querySelector('.lb-loading')?.remove();
+  if (lightboxHeld) {
+    bgRelease();
+    lightboxHeld = false;
+  }
 }
 
 function initLightbox() {
@@ -2595,7 +2749,10 @@ function initLightbox() {
       e.stopPropagation();
       if (expiryGuard()) return;
       const u = (dlBtn as HTMLElement).dataset.url || '';
-      if (u) window.location.href = `${u}${u.includes('?') ? '&' : '?'}download=1`;
+      if (u) {
+        bgHoldFor(15000); // 浏览器接管下载:定时让路
+        window.location.href = `${u}${u.includes('?') ? '&' : '?'}download=1`;
+      }
       return;
     }
     // 点在媒体/Office 面板/按钮上不关闭
@@ -3303,6 +3460,7 @@ async function backfillThumbs(): Promise<void> {
   let skip = 0;
   let fail = 0;
   toast(`开始补缩略图:共 ${targets.length} 个…`);
+  bgHold(); // 管理员批量补图:逐个下载原图+上传缩略图,后台引擎全程让路
   for (let i = 0; i < targets.length; i++) {
     const it = targets[i];
     try {
@@ -3329,6 +3487,7 @@ async function backfillThumbs(): Promise<void> {
     }
     toast(`补缩略图 ${i + 1}/${targets.length}…`);
   }
+  bgRelease();
   renderGrid();
   toast(
     `补缩略图完成:成功 ${ok} 个${skip ? `, ${skip} 个跳过(原图够小或 PDF 无法渲染)` : ''}${fail ? `, ${fail} 个失败` : ''}`,
@@ -3354,6 +3513,7 @@ async function handleFileChosen(file: File) {
   const seq = itemModalSeq; // 弹窗会话:上传途中弹窗被重开则结果作废
 
   ($('#item-save') as HTMLButtonElement).disabled = true;
+  bgHold(); // 用户上传:后台缓存引擎让路(上行带宽优先给上传)
   try {
     // 苹果 HEIC:上传前先转成 JPG,入库即全平台可看的 JPEG
     let work = await convertHeicIfNeeded(file, (s) => (status.textContent = s));
@@ -3437,6 +3597,8 @@ async function handleFileChosen(file: File) {
   } catch (e) {
     status.textContent = '';
     toast((e as Error).message, true);
+  } finally {
+    bgRelease();
   }
 }
 
@@ -3498,10 +3660,12 @@ function handleBatchChosen(files: File[]) {
 /** 串行执行单元:异常也保证 batchRunning 复位,队列不被单个任务失败弄死 */
 async function runBatchUpload(files: File[], targetMenuId: string, queued: boolean) {
   batchRunning = true;
+  bgHold(); // 批量上传:后台缓存引擎让路
   try {
     await batchUploadTask(files, targetMenuId, queued);
   } finally {
     batchRunning = false;
+    bgRelease();
   }
 }
 
