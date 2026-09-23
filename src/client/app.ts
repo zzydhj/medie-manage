@@ -2826,7 +2826,8 @@ async function generatePdfThumb(file: File): Promise<Blob | null> {
     const workerUrl = (await import('pdfjs-dist/build/pdf.worker.min.mjs?url')).default;
     pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
     const data = new Uint8Array(await file.arrayBuffer());
-    const doc = await pdfjs.getDocument({ data }).promise;
+    const task = pdfjs.getDocument({ data });
+    const doc = await task.promise;
     try {
       const page = await doc.getPage(1);
       const base = page.getViewport({ scale: 1 });
@@ -2842,7 +2843,7 @@ async function generatePdfThumb(file: File): Promise<Blob | null> {
       await page.render({ canvas, viewport }).promise;
       return await new Promise<Blob | null>((r) => canvas.toBlob(r, 'image/jpeg', 0.8));
     } finally {
-      await doc.destroy();
+      await task.destroy(); // v6:destroy 在 loadingTask 上,释放 worker 与内存
     }
   } catch {
     return null; // 加密/损坏 PDF:不阻断上传,卡片回退类型图标
