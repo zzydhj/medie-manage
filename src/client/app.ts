@@ -1157,6 +1157,41 @@ function renderSkeleton() {
 }
 
 // ---------------- 加载内容 ----------------
+// 菜单树本地缓存:刷新时 meta=1 可能赶上 Workers/D1 冷启动要好几秒,侧栏不能空白干等。
+// 先用上次落的树渲染一遍(秒出),meta 回来再覆盖并回写,与列表的 stale-while-revalidate 同思路
+const MENU_CACHE_PREFIX = 'mm-menus-';
+interface MenuCache {
+  menus: MenuNode[];
+  counts: Record<string, number>;
+  directCounts: Record<string, number>;
+  favCount: number;
+}
+function readMenuCache(): MenuCache | null {
+  if (!activeOrgId) return null;
+  try {
+    const raw = localStorage.getItem(MENU_CACHE_PREFIX + activeOrgId);
+    if (!raw) return null;
+    const d = JSON.parse(raw) as MenuCache;
+    if (!d || !Array.isArray(d.menus)) return null;
+    return d;
+  } catch {
+    return null;
+  }
+}
+function writeMenuCache() {
+  if (!activeOrgId) return;
+  try {
+    const payload: MenuCache = {
+      menus: MENUS,
+      counts: COUNTS,
+      directCounts: DIRECT_COUNTS,
+      favCount: FAV_COUNT,
+    };
+    localStorage.setItem(MENU_CACHE_PREFIX + activeOrgId, JSON.stringify(payload));
+  } catch {
+    // 配额满/隐私模式:忽略,侧栏退回等 meta
+  }
+}
 async function loadContent() {
   if (ME?.orgExpired) return; // 锁屏态:任何内容都不请求(服务端对到期公司全 403)
   clearPageCache(); // 任何结构性变更后旧页缓存作废
@@ -1183,6 +1218,16 @@ async function loadContent() {
   }
   const paintedStale = paintStaleList(); // 命中=刷新秒开;未命中再铺骨架屏
   if (!paintedStale) renderSkeleton();
+  // 侧栏秒出:meta 还没回来前先用上次落的菜单树渲染,冷启动慢也不空白。放在 paintStaleList 之后,
+  // 避免提前给 MENUS 赋值、改变 paintStaleList 的子树校验口径(它靠 MENUS 为空跳过校验)
+  const mc = readMenuCache();
+  if (mc) {
+    MENUS = mc.menus;
+    COUNTS = mc.counts ?? {};
+    DIRECT_COUNTS = mc.directCounts ?? {};
+    FAV_COUNT = mc.favCount ?? 0;
+    renderSidebar();
+  }
   const meta = await api<{
     menus: MenuNode[];
     counts: Record<string, number>;
@@ -1193,6 +1238,7 @@ async function loadContent() {
   COUNTS = meta.counts ?? {};
   DIRECT_COUNTS = meta.directCounts ?? {};
   FAV_COUNT = meta.favCount ?? 0;
+  writeMenuCache(); // 回写菜单树:下次刷新侧栏秒出
 
   // 校验视图:无记录或已失效(菜单被删/换公司)则用默认(手机端首屏=收藏,电脑端=第一个叶子菜单)
   if (saved?.fav) {
