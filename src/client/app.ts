@@ -1578,7 +1578,12 @@ async function runBatchOp(
       setBatchProgress(btn, i + 1, items.length);
     }
   } finally {
-    if (btn) btn.innerHTML = html;
+    // 恢复文案与可点状态:之前只还原 innerHTML,弹窗「移动」确认按钮跑一次后永久灰死,
+    // 再开弹窗点击无反应(批量条按钮有 updateBatchBar 兜底,弹窗按钮没有)
+    if (btn) {
+      btn.innerHTML = html;
+      btn.disabled = false;
+    }
   }
   return { ok, failed };
 }
@@ -1622,6 +1627,12 @@ function openBatchMoveModal() {
   if (first && items.every((i) => i.menu_id === first)) sel.value = first;
   const tip = $('#batch-move-tip');
   if (tip) tip.textContent = `把 ${items.length} 个素材移动到`;
+  // 确认按钮复位:兜底清掉上次批量操作可能残留的灰死/进度态,保证本次打开可点
+  const confirmBtn = $('#batch-move-confirm') as HTMLButtonElement | null;
+  if (confirmBtn) {
+    confirmBtn.disabled = false;
+    confirmBtn.innerHTML = '移动';
+  }
   openModal('batch-move-modal');
 }
 
