@@ -268,6 +268,9 @@ async function init() {
   initSearch();
   initBatch();
   initLightbox();
+  // 预热窗跳过按钮:进页就绑好(不能等 loadContent/预热开始才绑,冷启动慢时点了会没反应);
+  // 点了立即收窗正常浏览,缓存在后台静默继续刷
+  $('#warmup-skip')?.addEventListener('click', () => closeWarmupUi());
   // 无限滚动:接近底部(提前 800px)静默预取下一页
   window.addEventListener(
     'scroll',
@@ -288,12 +291,16 @@ async function init() {
     enterLockMode();
     return;
   }
-  // 新设备/无缓存首登:loadContent 前先挂全屏预热进度窗(文案"加载中"与首屏加载自然衔接),
-  // 首屏渲染在弹窗背后照常进行,预热完成收窗即是可交互状态
-  const needWarmup = !!activeOrgId && warmupNeeded(activeOrgId);
-  if (needWarmup) $('#warmup-overlay')?.classList.remove('hidden');
-  await loadContent();
-  if (needWarmup) maybeWarmup().catch(() => {});
+  // 新设备/无缓存首登:立即挂全屏预热进度窗并起跑时间进度(不等首屏),
+  // 首屏渲染在弹窗背后照常进行;进度纯时间驱动 ~90s 到 100% 必收窗,
+  // 缓存没刷完则转后台静默继续
+  if (activeOrgId && warmupNeeded(activeOrgId)) {
+    startWarmupUi();
+    await loadContent();
+    maybeWarmup().catch(() => {});
+  } else {
+    await loadContent();
+  }
 }
 
 function bindHeader() {
@@ -861,11 +868,13 @@ function schedulePrefetch() {
   prefetchTimer = window.setTimeout(step, 1200);
 }
 // ---------------- 新设备首登预热:一次性把列表元数据 + 缩略图字节灌进缓存 ----------------
-// 首次打开(本机无任何列表缓存)时全屏弹窗跑进度,刷完之后任何分组/刷新都秒开,
-// 不再出现"白占位图等半天";跳过后转后台静默继续,做完落标记,下次不再打扰
-const WARMUP_PREFIX = 'mm-warmup-'; // + orgId:done=已完成 / skip=用户跳过(不再弹大窗)
+// 首次打开(本机无任何列表缓存)时全屏弹窗:进度条纯时间驱动(0 起跑,~90 秒到 100%),
+// 到 100% 必收窗——缓存没刷完就转后台静默继续,做完落 done 标记,下次不再打扰
+const WARMUP_PREFIX = 'mm-warmup-'; // + orgId:done=已完成 / skip=用户跳过或到点关窗(不再弹大窗)
 const WARMUP_MAX_ITEMS = 2000; // 超大库封顶:先预热前 2000 个,其余靠日常深度预载补
+const WARMUP_UI_MS = 90_000; // 进度窗固定时长:~1.1%/秒,90 秒到 100%
 let warmupRunning = false;
+let warmupUiTimer: number | undefined;
 function warmupNeeded(orgId: string): boolean {
   if (localStorage.getItem(`${WARMUP_PREFIX}${orgId}`)) return false;
   try {
@@ -878,35 +887,51 @@ function warmupNeeded(orgId: string): boolean {
   }
   return true;
 }
+/** 弹预热窗并起跑时间进度:init 里先于 loadContent 调用,进度条从第一秒就走;
+ *  按墙钟算进度,后台标签被定时器限流也不会拖长,到点必收 */
+function startWarmupUi() {
+  const overlay = $('#warmup-overlay');
+  if (!overlay) return;
+  overlay.classList.remove('hidden');
+  const t0 = Date.now();
+  window.clearInterval(warmupUiTimer);
+  warmupUiTimer = window.setInterval(() => {
+    const p = Math.min(100, Math.round(((Date.now() - t0) / WARMUP_UI_MS) * 100));
+    const bar = $('#warmup-bar');
+    const pct = $('#warmup-pct');
+    if (bar) bar.style.width = `${p}%`;
+    if (pct) pct.textContent = `${p}%`;
+    if (p >= 100) closeWarmupUi(); // 到 100% 必关,不管缓存刷完没
+  }, 250);
+}
+/** 收预热进度窗:关窗即落 skip 标记(不管跳过还是到点自动关)——缓存没刷完前刷新页面
+ *  也不会再弹大窗,后台静默继续;真正刷完后 done 覆盖 skip */
+function closeWarmupUi() {
+  window.clearInterval(warmupUiTimer);
+  warmupUiTimer = undefined;
+  $('#warmup-overlay')?.classList.add('hidden');
+  if (activeOrgId) {
+    try {
+      const key = `${WARMUP_PREFIX}${activeOrgId}`;
+      if (localStorage.getItem(key) !== 'done') localStorage.setItem(key, 'skip');
+    } catch {
+      // localStorage 不可用时忽略
+    }
+  }
+}
+/** 实际预热工作:整库清单落页缓存 + 各视图第一页落盘 + 缩略图字节灌 HTTP 缓存;
+ *  进度窗已收(跳过/到点)也不中断,静默刷完落 done 标记 */
 async function maybeWarmup() {
   if (!activeOrgId || warmupRunning) return;
   if (ME?.orgExpired || !warmupNeeded(activeOrgId)) return;
   warmupRunning = true;
   const org = activeOrgId;
-  const overlay = $('#warmup-overlay');
-  const bar = $('#warmup-bar');
-  const pct = $('#warmup-pct');
-  const label = $('#warmup-label');
-  const skippedByUser = localStorage.getItem(`${WARMUP_PREFIX}${org}`) === 'skip';
-  // 用户之前点过跳过:不再弹大窗,后台静默刷;首次:弹全屏进度
-  const showUi = !!overlay && !skippedByUser;
-  if (showUi) {
-    overlay!.classList.remove('hidden');
-    $('#warmup-skip')?.addEventListener(
-      'click',
-      () => {
-        overlay!.classList.add('hidden');
-        localStorage.setItem(`${WARMUP_PREFIX}${org}`, 'skip'); // 刷新也不再弹,后台继续刷
-      },
-      { once: true },
-    );
-  }
   const report = (done: number, total: number) => {
-    if (!showUi || !total) return;
-    const p = Math.min(100, Math.round((done / total) * 100));
-    if (bar) bar.style.width = `${p}%`;
-    if (pct) pct.textContent = `${p}%`;
-    if (label) label.textContent = `正在缓存素材预览 ${done} / ${total}`;
+    // 弹窗还开着才更新计数文案(进度条本身纯时间驱动,与这里无关)
+    if (warmupUiTimer !== undefined && total) {
+      const label = $('#warmup-label');
+      if (label) label.textContent = `正在缓存素材预览 ${done} / ${total}`;
+    }
   };
   try {
     // 1) 元数据全量:整库逐页拉清单(URL 与 pageCacheKey 同格式,顺带进页缓存),
@@ -960,14 +985,6 @@ async function maybeWarmup() {
     // 4 并发:比日常预载激进(此时用户就在等),又不至于把浏览器连接池占死
     await Promise.all([worker(), worker(), worker(), worker()]);
     localStorage.setItem(`${WARMUP_PREFIX}${org}`, 'done');
-    if (showUi) {
-      if (label) label.textContent = '加载完成,之后打开都能秒开了';
-      if (bar) bar.style.width = '100%';
-      if (pct) pct.textContent = '100%';
-      await new Promise((r) => setTimeout(r, 700)); // 让用户看到 100% 再收
-      overlay!.classList.add('hidden');
-      toast('预热完成:素材已全部缓存,之后打开秒开');
-    }
   } catch {
     // 网络异常等:静默放弃,不打扰用户;标记 skip 避免每次刷新都弹大窗
     try {
@@ -975,7 +992,7 @@ async function maybeWarmup() {
     } catch {
       // localStorage 不可用时忽略
     }
-    overlay?.classList.add('hidden');
+    closeWarmupUi();
   } finally {
     warmupRunning = false;
   }
