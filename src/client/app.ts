@@ -864,10 +864,14 @@ function updateGridFooter() {
 //  R4 大文件(老图片没缩略图时卡片挂的原图)不预载:点开/下载时按需加载。
 //     (曾做"慢车道预载原图",但几百 MB 原图会挤爆 HTTP 缓存、把刚看过的小缩略图驱逐掉,
 //      导致"加载好→回来又白",已删除;引擎只预载小缩略图)
+//  R5 空闲补缩略图:老素材没缩略图时卡片挂多 MB 原图(R4 不预载→每次进分组都现下→
+//     "每组第一个白一下",因为最老的素材排在每组最前)。引擎空闲时管理员桌面端自动补生成,
+//     回写后下一轮重规划用缩略图 URL 重铺缓存+排字节,白卡根治
 // 抓取一律 priority:'low' + 3 并发:永远排在卡片自身 <img> 之后,不与前台抢带宽
 const BG_FAST_WORKERS = 3; // 并发(缩略图小文件)
 const BG_PLAN_PAGE = 100; // 整库清单分页大小(服务端上限 100)
 const BG_MAX_ITEMS = 5000; // 超大库封顶:清单最多取前 5000 条,其余靠下次重规划补
+const BG_BACKFILL_PER_ROUND = 10; // R5 每轮空闲最多补几个缩略图(下载原图+编码+上传较重,小步快跑)
 
 let bgFast: string[] = []; // 缩略图队列,顺序即优先级
 let bgFastAt = 0;
@@ -880,6 +884,7 @@ let bgUserBusy = 0; // 用户任务计数:>0 时引擎暂停
 let bgUserSince = 0;
 let bgFastWorkers = 0;
 let bgParent = new Map<string, string | null>(); // menuId → parent_id(算素材归属哪些分组视图)
+let bgNoThumb: ItemDTO[] = []; // 缺缩略图的老图片/PDF(R5 空闲补图队列,规划时从整库清单筛出)
 
 /** 当前视图归属键:与 listKey / pageCacheKey 的 view 段一致(收藏='fav',菜单=id,整库='') */
 function bgScope(): string {
@@ -928,6 +933,12 @@ function bgStart() {
         if (org !== activeOrgId) return; // 换公司:本轮作废
         bgSpawn(org);
         await bgWaitDrained(org);
+        // R5 队列见底后的空闲期:给缺缩略图的老素材补图(仅管理员桌面端:上传/回写是管理员接口,
+        // 移动端不烧流量);补成功则标 dirty 重规划,新缩略图入缓存与字节队列
+        if (bgNoThumb.length && isAdmin && !isMobileViewport()) {
+          const fixed = await bgBackfill(org);
+          if (fixed) bgDirty = true;
+        }
       } while (bgDirty && org === activeOrgId);
       if (org === activeOrgId) bgFinish();
     } catch {
@@ -943,6 +954,33 @@ async function bgWaitDrained(org: string) {
   while (org === activeOrgId && (bgFastWorkers > 0 || bgFastAt < bgFast.length)) {
     await sleep(1000);
   }
+}
+/** R5 空闲补图:逐个下载原图→本地生成缩略图→上传→回写 DB;每个前都让路检查,
+ *  用户一有动作立即暂停。返回本轮是否补成功(成功则重规划重铺缓存) */
+async function bgBackfill(org: string): Promise<boolean> {
+  let fixed = 0;
+  for (let i = 0; i < BG_BACKFILL_PER_ROUND && bgNoThumb.length; i++) {
+    await bgWaitUser();
+    if (org !== activeOrgId) return fixed > 0;
+    const it = bgNoThumb.shift()!;
+    if (it.thumb_url) continue; // 上一轮已补过(手动/引擎):跳过
+    const r = await backfillOneThumb(it);
+    if (r === 'ok') {
+      fixed++;
+      patchThumbUrl(it.id, it.thumb_url!);
+    }
+  }
+  return fixed > 0;
+}
+/** 补图成功后把新 thumb_url 写进前台窗口与内存页缓存(同对象引用共享修正);
+ *  落盘列表缓存不改:下次进入时 revalidate 会用权威数据自愈并回写 */
+function patchThumbUrl(id: string, url: string) {
+  const hit = ITEMS.find((x) => x.id === id);
+  if (hit) hit.thumb_url = url;
+  pageCache.forEach((d) => {
+    const h = d.items.find((x) => x.id === id);
+    if (h) h.thumb_url = url;
+  });
 }
 /** R1 第一步:整库清单。逐页拉(pageSize=100),单页失败重试一次、仍败跳过该页——
  *  一页失败继不 abort 全站(否则其余分组的预览永远刷不到) */
@@ -980,6 +1018,10 @@ async function bgPlan(org: string) {
     favFirst = null;
   }
   if (org !== activeOrgId) return;
+  // R5:顺筛缺缩略图的老素材进空闲补图队列(每轮以最新清单为准,不跨轮累积)
+  bgNoThumb = all
+    .filter((i) => (i.type === 'image' || i.type === 'pdf') && !i.thumb_url)
+    .slice(0, BG_BACKFILL_PER_ROUND * 20);
   bgRebuildTree();
   bgSeedLists(org, all, favs, favFirst);
   bgSeedBytes(all, new Set(favs));
@@ -3497,7 +3539,30 @@ async function compressImageIfNeeded(
   }
 }
 
-/** 给无缩略图的老图片/老 PDF 补生成:拉原文件 → 本地生成(图片压缩/PDF 首页渲染) → 上传 → 回写卡片。管理员一次性操作 */
+/** 单个素材补缩略图:拉原文件→本地生成(图片压缩/PDF 首页渲染)→上传→回写 DB。
+ *  手动批量与引擎空闲补图(R5)共用;ok=成功 skip=原图够小/PDF 渲染不出 fail=失败 */
+async function backfillOneThumb(it: ItemDTO): Promise<'ok' | 'skip' | 'fail'> {
+  try {
+    const res = await fetch(it.file_url, { priority: 'low' });
+    if (!res.ok) return 'fail';
+    const blob = await res.blob();
+    const f = new File([blob], it.filename || it.title, { type: blob.type });
+    const thumbBlob = it.type === 'pdf' ? await generatePdfThumb(f) : await generateImageThumb(f);
+    // 图片原图已足够小无需缩略图、或 PDF 加密/损坏渲染不出:跳过
+    if (!thumbBlob) return 'skip';
+    const thumb = await uploadFile(new File([thumbBlob], 'thumb.jpg', { type: 'image/jpeg' }), 'thumb');
+    await api(`/api/items/${it.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ thumbKey: thumb.key, thumbUrl: thumb.url }),
+    });
+    it.thumb_url = thumb.url;
+    return 'ok';
+  } catch {
+    return 'fail';
+  }
+}
+/** 给无缩略图的老图片/老 PDF 补生成:管理员一次性操作(引擎 R5 也会在空闲时自动补) */
 async function backfillThumbs(): Promise<void> {
   if (expiryGuard()) return;
   while (HAS_MORE) await loadMore(); // 分页后先加载全量,再找出缺缩略图的
@@ -3508,34 +3573,21 @@ async function backfillThumbs(): Promise<void> {
   let fail = 0;
   toast(`开始补缩略图:共 ${targets.length} 个…`);
   bgHold(); // 管理员批量补图:逐个下载原图+上传缩略图,后台引擎全程让路
+  const doneIds = new Set<string>();
   for (let i = 0; i < targets.length; i++) {
-    const it = targets[i];
-    try {
-      const res = await fetch(it.file_url);
-      if (!res.ok) throw new Error(String(res.status));
-      const blob = await res.blob();
-      const f = new File([blob], it.filename || it.title, { type: blob.type });
-      const thumbBlob = it.type === 'pdf' ? await generatePdfThumb(f) : await generateImageThumb(f);
-      // 图片原图已足够小无需缩略图、或 PDF 加密/损坏渲染不出:跳过
-      if (!thumbBlob) {
-        skip++;
-        continue;
-      }
-      const thumb = await uploadFile(new File([thumbBlob], 'thumb.jpg', { type: 'image/jpeg' }), 'thumb');
-      await api(`/api/items/${it.id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ thumbKey: thumb.key, thumbUrl: thumb.url }),
-      });
-      it.thumb_url = thumb.url;
+    const r = await backfillOneThumb(targets[i]);
+    if (r === 'ok') {
       ok++;
-    } catch {
-      fail++;
-    }
+      doneIds.add(targets[i].id);
+    } else if (r === 'skip') skip++;
+    else fail++;
     toast(`补缩略图 ${i + 1}/${targets.length}…`);
   }
   bgRelease();
+  // 手动补过的从引擎空闲队列剔除,防重复上传;有成功则起一轮重规划重铺缓存+排字节
+  if (doneIds.size) bgNoThumb = bgNoThumb.filter((x) => !doneIds.has(x.id));
   renderGrid();
+  if (ok) bgStart();
   toast(
     `补缩略图完成:成功 ${ok} 个${skip ? `, ${skip} 个跳过(原图够小或 PDF 无法渲染)` : ''}${fail ? `, ${fail} 个失败` : ''}`,
     fail > 0 && ok === 0,
