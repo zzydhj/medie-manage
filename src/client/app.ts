@@ -313,7 +313,7 @@ async function init() {
     return;
   }
   // 新设备/无缓存首登:立即挂全屏进度窗并起跑时间进度(不等首屏),
-  // 首屏渲染在弹窗背后照常进行;进度纯时间驱动 ~90s 到 100% 必收窗,
+  // 首屏渲染在弹窗背后照常进行;进度纯时间驱动 20s 到 100% 必收窗,
   // 真正刷缓存的是 loadContent 末尾启动的后台加载引擎(没刷完转后台静默继续)
   if (activeOrgId && warmupNeeded(activeOrgId)) startWarmupUi();
   await loadContent();
@@ -1112,10 +1112,10 @@ async function bgFetch(url: string) {
   if (bgDone % 8 === 0) bgReport();
 }
 // ---------------- 新设备首登进度窗:纯 UI,真正干活的是上面的后台加载引擎 ----------------
-// 首次打开(本机无任何列表缓存)时全屏弹窗:进度条纯时间驱动(0 起跑,~90 秒到 100%),
+// 首次打开(本机无任何列表缓存)时全屏弹窗:进度条纯时间驱动(0 起跑,20 秒到 100%),
 // 到 100% 必收窗——引擎没刷完就转后台静默继续,刷完落 done 标记,下次不再打扰
 const WARMUP_PREFIX = 'mm-warmup-'; // + orgId:done=已刷完 / skip=用户跳过或到点关窗(不再弹大窗)
-const WARMUP_UI_MS = 90_000; // 进度窗固定时长:~1.1%/秒,90 秒到 100%
+const WARMUP_UI_MS = 20_000; // 进度窗固定时长:5%/秒,20 秒到 100%(用户定的上限:不等太久,没加载完的后台继续)
 let warmupUiTimer: number | undefined;
 /** 进度窗文案:引擎报数(进度条本身纯时间驱动,与这里无关);窗已收就不动 DOM */
 function bgReport() {
