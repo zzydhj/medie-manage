@@ -42,9 +42,13 @@ let ME: Me | null = null;
 let activeOrgId: string | null = null;
 let MENUS: MenuNode[] = [];
 let ITEMS: ItemDTO[] = [];
-// 分页:ITEMS 为"已加载窗口";TOTAL/HAS_MORE 驱动无限滚动;COUNTS/FAV_COUNT 为服务端聚合计数
-let PAGE = 1;
-const PAGE_SIZE = 36;
+// 加载单位为"整个视图":切换时把该视图全部页并行发出、一次返回一次渲染,
+// 不再"先显示 36 个、过一会儿再长出来";超 VIEW_FETCH_MAX 的超大视图才走无限滚动续加载。
+// ITEMS 为已加载窗口;TOTAL/HAS_MORE 驱动无限滚动;COUNTS/FAV_COUNT 为服务端聚合计数
+let PAGE = 1; // 已加载的传输页数(= ceil(ITEMS.length / VIEW_PAGE)),loadMore 从这续
+const VIEW_PAGE = 100; // 传输页 = 服务端单页上限
+const VIEW_FETCH_MAX = 1000; // 单视图一次拿满的上限(= 10 页并行)
+const VIEW_SEED_ITEMS = 100; // 引擎对每个视图落盘(localStorage)的首屏上限
 let TOTAL = 0;
 let HAS_MORE = false;
 let loadingMore = false;
@@ -302,10 +306,6 @@ async function init() {
     },
     { passive: true },
   );
-  // 窗口变大后可能又不足一屏:补页
-  window.addEventListener('resize', () => {
-    ensureFill();
-  });
 
   // 会员到期:直接锁屏(不加载任何内容,服务端也已拒发),弹续费大弹窗
   if (ME.orgExpired) {
@@ -536,14 +536,16 @@ interface PageData {
   favCount?: number;
 }
 function viewQuery(page: number): string {
-  const p = new URLSearchParams({ page: String(page), pageSize: String(PAGE_SIZE) });
+  const p = new URLSearchParams({ page: String(page), pageSize: String(VIEW_PAGE) });
   if (searchQuery.trim()) p.set('q', searchQuery.trim());
   else if (favView) p.set('fav', '1');
   else if (selectedMenuId) p.set('menuId', selectedMenuId);
   if (typeFilter) p.set('t', typeFilter);
   return p.toString();
 }
-// 页缓存:切回看过的视图/页直接命中内存,免网络往返 → 切换秒开;任何变更(loadContent/收藏)会清空
+// 页缓存:切回看过的视图/页直接命中内存,免网络往返 → 切换秒开;任何变更(loadContent/收藏)会清空。
+// 整视图加载后条目数按"视图页数"增长(后台引擎也整视图铺),上限要容得下整库铺满
+const PAGE_CACHE_MAX = 250;
 const pageCache = new Map<string, PageData>();
 function pageCacheKey(page: number): string {
   return `${activeOrgId}|${searchQuery.trim()}|${typeFilter}|${favView ? 'fav' : selectedMenuId ?? ''}|${page}`;
@@ -557,9 +559,10 @@ async function fetchPage(page: number): Promise<PageData> {
   if (hit) return hit;
   const d = await api<PageData>(`/api/content?${viewQuery(page)}`);
   pageCache.set(key, d);
-  if (pageCache.size > 60) {
+  while (pageCache.size > PAGE_CACHE_MAX) {
     const oldest = pageCache.keys().next().value;
-    if (oldest !== undefined) pageCache.delete(oldest);
+    if (oldest === undefined) break;
+    pageCache.delete(oldest);
   }
   return d;
 }
@@ -709,7 +712,7 @@ function paintStaleList(): boolean {
   // 星标以内存 FAVORITES 为准(收藏按钮是乐观更新):只有会话内首次绘制才用缓存打底,
   // 否则刚点的收藏会被旧缓存回滚(星星灭掉 / 收藏视图少一项)
   if (!FAVORITES.size && stale.favorites?.length) FAVORITES = new Set(stale.favorites);
-  PAGE = Math.max(1, Math.ceil(ITEMS.length / PAGE_SIZE));
+  PAGE = Math.max(1, Math.ceil(ITEMS.length / VIEW_PAGE));
   renderGrid();
   animateGridEnterIfNewView();
   return true;
@@ -726,7 +729,7 @@ function animateGridEnterIfNewView() {
   void grid.offsetWidth; // 强制回流以重播动画
   grid.classList.add('view-enter');
 }
-/** 并行拉连续多页(刷新/补页/预载共用):多页同发,免串行往返 */
+/** 并行拉连续多页(无限滚动续加载用):多页同发,免串行往返 */
 async function fetchWindow(from: number, pages: number) {
   const nums: number[] = [];
   for (let p = from; p < from + pages; p++) nums.push(p);
@@ -742,7 +745,7 @@ async function fetchWindow(from: number, pages: number) {
     if (ds[i].favCount != null) favCount = ds[i].favCount;
     items = items.concat(ds[i].items);
     used = i + 1;
-    if (ds[i].items.length < PAGE_SIZE) break;
+    if (ds[i].items.length < VIEW_PAGE) break;
   }
   return { items, total, favorites, favCount, pages: used };
 }
@@ -753,52 +756,39 @@ function appendWindow(w: { items: ItemDTO[]; total: number; pages: number }) {
   HAS_MORE = ITEMS.length < TOTAL;
   renderGrid();
 }
-/** 切换序列号:快速连点菜单时只允许最后一次点击的结果落地,过期响应/补页全部丢弃 */
+/** 切换序列号:快速连点菜单时只允许最后一次点击的结果落地,过期响应全部丢弃 */
 let refreshSeq = 0;
-async function ensureFill(seq = refreshSeq) {
-  let guard = 0;
-  while (
-    HAS_MORE &&
-    guard++ < 4 &&
-    seq === refreshSeq &&
-    document.documentElement.scrollHeight <= window.innerHeight + 300
-  ) {
-    const w = await fetchWindow(PAGE + 1, 3);
-    // 补页返回后必须复查:这几页可能是切分组前发起的旧视图请求,
-    // 不查就把旧分组素材拼进新列表(串内容),还会被 writeListCache 落盘固化
-    if (seq !== refreshSeq) return;
-    appendWindow(w);
-  }
-}
-/** 前台铺满当前视图:首屏替换后把剩余页全量拉进已加载窗口(菜单打开即全部可见,
- *  不再"先 36 个、滚下去等半天")。10 页/波并行,波间让出主线程防长任务;
- *  期间持有 bgHold:后台缓存引擎让路,先干用户正在看的事 */
-let preloadSeq = 0;
-function startPreload() {
-  const seq = ++preloadSeq;
-  bgHold();
-  void (async () => {
-    try {
-      while (HAS_MORE && PAGE < 60 && seq === preloadSeq) {
-        const w = await fetchWindow(PAGE + 1, 10);
-        if (seq !== preloadSeq) return; // 用户已切走:作废
-        appendWindow(w);
-        await sleep(0); // 让出主线程,避免长任务卡交互
-      }
-      if (seq === preloadSeq) writeListCache(); // 全量窗口落盘,下次刷新秒开
-    } catch {
-      // 静默失败不骚扰:无限滚动仍可重试
-    } finally {
-      bgRelease();
-      if (seq === preloadSeq) updateGridFooter();
+/** 一次拿全当前视图:第一页带回 total,剩余页一波并行全发、一起返回。
+ *  取代旧"先渲染第一页、再 startPreload 一波波补页":列表要么不渲染、要么一次渲染完整,
+ *  消除"先 36 个、过一会儿长出来"的割裂感;温会话(页缓存已铺)甚至零网络立即全量。
+ *  超 VIEW_FETCH_MAX 的视图留 HAS_MORE 给无限滚动 */
+async function fetchViewAll(): Promise<{
+  items: ItemDTO[];
+  total: number;
+  favorites?: string[];
+  favCount?: number;
+}> {
+  const first = await fetchPage(1);
+  const pages = Math.min(Math.ceil(first.total / VIEW_PAGE), Math.ceil(VIEW_FETCH_MAX / VIEW_PAGE));
+  let items = first.items;
+  let favorites = first.favorites;
+  let favCount = first.favCount;
+  if (pages > 1) {
+    const nums: number[] = [];
+    for (let p = 2; p <= pages; p++) nums.push(p);
+    const ds = await Promise.all(nums.map((p) => fetchPage(p)));
+    for (const d of ds) {
+      items = items.concat(d.items);
+      if (d.favorites) favorites = d.favorites;
+      if (d.favCount != null) favCount = d.favCount;
     }
-  })();
+  }
+  return { items, total: first.total, favorites, favCount };
 }
 /** 重置到第一页并重渲染(切菜单/搜索/收藏/刷新列表用);
  *  全程持有 bgHold:前台切换期间后台引擎全停,保证这次列表请求不被抢带宽 */
 async function refreshList() {
   const seq = ++refreshSeq; // 作废之前所有在飞的切换
-  preloadSeq++; // 取消上一轮铺满
   bgHold();
   try {
     const painted = paintStaleList(); // 上次窗口立即秒开
@@ -813,24 +803,21 @@ async function refreshList() {
       PAGE = 1;
       renderSkeleton(); // 旧内容一律先换成骨架屏:新数据到达前绝不展示与筛选不符的卡片
     }
-    // 有旧窗口时并行补到同等规模,替换一次到位;没有则只拉第一页
-    const want = painted ? Math.min(10, Math.max(1, Math.ceil(ITEMS.length / PAGE_SIZE))) : 1;
-    const w = await fetchWindow(1, want);
+    // 一次拿全视图(全部页并行):渲染时要么骨架屏、要么完整列表,没有中间态
+    const w = await fetchViewAll();
     if (seq !== refreshSeq) return; // 用户又切走了:这份结果作废,避免"点A显示B"
-    PAGE = w.pages;
     ITEMS = w.items;
     TOTAL = w.total;
-    HAS_MORE = ITEMS.length < TOTAL;
+    PAGE = Math.max(1, Math.ceil(ITEMS.length / VIEW_PAGE));
+    HAS_MORE = ITEMS.length < TOTAL; // 只有超上限的超大视图才走无限滚动
     if (w.favorites) FAVORITES = new Set(w.favorites);
     // 收藏计数以服务端为准:纠正乐观 +/- 的漂移(否则快速连点/回滚会把徽章算成负数)
     if (w.favCount != null) FAV_COUNT = w.favCount;
     renderGrid();
+    updateGridFooter();
     updateFavCount();
     animateGridEnterIfNewView();
-    await ensureFill(seq); // 动画(~420ms)进行中并行补满首屏
-    if (seq !== refreshSeq) return;
     writeListCache();
-    startPreload(); // 铺满当前视图
     bgPrioritize(); // 后台引擎:把当前视图的预览字节提到队首(点哪先刷哪)
   } finally {
     bgRelease();
@@ -843,10 +830,9 @@ async function loadMore() {
   bgHold(); // 滚动加载也是用户任务:后台引擎让路
   updateGridFooter();
   try {
-    const w = await fetchWindow(PAGE + 1, 1);
+    const w = await fetchWindow(PAGE + 1, 3); // 续加载也 3 页并行(300 条),超大视图尾部少一段一段的感觉
     if (seq !== refreshSeq) return; // 切换已发生:不要把旧视图的页混进新视图
     appendWindow(w);
-    await ensureFill(seq);
   } finally {
     bgRelease();
     loadingMore = false;
@@ -882,7 +868,6 @@ function updateGridFooter() {
 const BG_FAST_WORKERS = 3; // 并发(缩略图小文件)
 const BG_PLAN_PAGE = 100; // 整库清单分页大小(服务端上限 100)
 const BG_MAX_ITEMS = 5000; // 超大库封顶:清单最多取前 5000 条,其余靠下次重规划补
-const BG_SEED_PAGE_CACHE_MAX = 300; // 内存页缓存最多铺到多少个视图(其余靠 localStorage 秒开)
 
 let bgFast: string[] = []; // 缩略图队列,顺序即优先级
 let bgFastAt = 0;
@@ -989,7 +974,7 @@ async function bgPlan(org: string) {
   // 失败则不铺收藏视图(用全局序铺反而会污染个人序缓存,下次进入再校验也是闪一下错序)
   let favFirst: { items: ItemDTO[]; total: number } | null = null;
   try {
-    const fd = await api<PageData>(`/api/content?fav=1&page=1&pageSize=${PAGE_SIZE}`);
+    const fd = await api<PageData>(`/api/content?fav=1&page=1&pageSize=${VIEW_PAGE}`);
     favFirst = { items: fd.items, total: fd.total };
   } catch {
     favFirst = null;
@@ -1044,11 +1029,24 @@ function bgSeedLists(org: string, all: ItemDTO[], favs: string[], favFirst: { it
   byView.forEach((items, view) => {
     if (view === cur) return; // 当前视图由前台 writeListCache 维护(窗口可能已铺满 500 条),引擎不覆盖
     if (!view && MENUS.length) return; // 整库视图只在"没有菜单"时才是真实视图
-    const d: PageData = { items: items.slice(0, PAGE_SIZE), total: totalOverride.get(view) ?? items.length, favorites: favs };
-    // 键格式与 pageCacheKey / listKey 对齐:无搜索词、无类型筛选的第一页
-    if (pageCache.size < BG_SEED_PAGE_CACHE_MAX) pageCache.set(`${org}|||${view}|1`, d);
-    // 落盘上限与 LRU 对齐:再多也会被注册表挤掉,白写
-    if (seeded++ < LIST_CACHE_MAX_VIEWS) writePrefetchCache(`${LIST_CACHE_PREFIX}${org}|||${view}`, d);
+    const total = totalOverride.get(view) ?? items.length;
+    // 内存页缓存按传输页铺满整个视图:前台切换是一次拿全视图(fetchViewAll 逐页命中),
+    // 只铺第一页会让剩余页走网络,又回到"先 36 个再长出来"的割裂感
+    const pages = Math.ceil(items.length / VIEW_PAGE);
+    for (let p = 1; p <= pages && pageCache.size < PAGE_CACHE_MAX; p++) {
+      pageCache.set(`${org}|||${view}|${p}`, {
+        items: items.slice((p - 1) * VIEW_PAGE, p * VIEW_PAGE),
+        total,
+        favorites: favs,
+      });
+    }
+    // 落盘每视图限 VIEW_SEED_ITEMS 条(localStorage 预算):秒开先画头部,其余由内存页缓存/网络一次补齐
+    if (seeded++ < LIST_CACHE_MAX_VIEWS)
+      writePrefetchCache(`${LIST_CACHE_PREFIX}${org}|||${view}`, {
+        items: items.slice(0, VIEW_SEED_ITEMS),
+        total,
+        favorites: favs,
+      });
   });
 }
 /** R1 第三步 + R2:排缩略图字节队列。只预载缩略图(小文件);没缩略图的老图片/大原图不预载,
