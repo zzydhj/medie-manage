@@ -572,9 +572,8 @@ async function fetchPage(page: number): Promise<PageData> {
 const LIST_CACHE_PREFIX = 'mm-list-';
 const LIST_REGISTRY = 'mm-list-registry';
 function listKey(): string {
-  return `${LIST_CACHE_PREFIX}${activeOrgId}|${searchQuery.trim()}|${typeFilter}|${
-    favView ? 'fav' : selectedMenuId ?? ''
-  }`;
+  return `${LIST_CACHE_PREFIX}${activeOrgId}|${searchQuery.trim()}|${typeFilter}|${favView ? 'fav' : selectedMenuId ?? ''
+    }`;
 }
 interface ListCache {
   items: ItemDTO[];
@@ -1136,7 +1135,7 @@ function bgSpawn(org: string) {
   }
 }
 async function bgRunFast(org: string) {
-  for (;;) {
+  for (; ;) {
     if (activeOrgId !== org) return; // 换公司:旧工人立即退出,不碰新公司的队列
     await bgWaitUser(); // R3:用户任务优先
     if (bgFastAt >= bgFast.length) return;
@@ -1450,15 +1449,14 @@ function renderMenuList(nodes: MenuNode[], parentId: string, depth: number): str
             <span class="menu-count${cnt ? '' : ' zero'}"${directHint(n)}>${cnt}</span>
             <span class="menu-actions">${handle}${adminBtns}</span>
           </div>
-          ${
-            hasKids
-              ? `<div class="menu-children"><div class="menu-list" data-parent="${n.id}">${renderMenuList(
-                  n.children,
-                  n.id,
-                  Math.min(depth + 1, 4),
-                )}</div></div>`
-              : ''
-          }
+          ${hasKids
+          ? `<div class="menu-children"><div class="menu-list" data-parent="${n.id}">${renderMenuList(
+            n.children,
+            n.id,
+            Math.min(depth + 1, 4),
+          )}</div></div>`
+          : ''
+        }
         </div>`;
     })
     .join('');
@@ -1663,9 +1661,8 @@ function renderGrid() {
   const searching = searchQuery.trim().length > 0;
 
   if (!searching && !favView && !selectedMenuId) {
-    grid.innerHTML = `<div class="empty-hint">${
-      isAdmin ? '左侧还没有菜单,点击"新增一级菜单"开始' : '暂无内容'
-    }</div>`;
+    grid.innerHTML = `<div class="empty-hint">${isAdmin ? '左侧还没有菜单,点击"新增一级菜单"开始' : '暂无内容'
+      }</div>`;
     return;
   }
 
@@ -1714,12 +1711,9 @@ function renderGrid() {
       const showCopy = !mobile && it.type === 'image';
       const showShare = mobile && canShare;
       // 右上角统一圆形悬浮按钮:收藏星标 + 三点菜单(编辑/删除收纳在弹层里)
-      const cardActions = `<div class="card-actions"><button class="card-fab fav ${
-        faved ? 'on' : ''
-      }" data-act="fav" data-id="${it.id}" title="${faved ? '取消收藏' : '收藏'}"><i class="fa-${
-        faved ? 'solid' : 'regular'
-      } fa-star"></i></button>${
-        isAdmin
+      const cardActions = `<div class="card-actions"><button class="card-fab fav ${faved ? 'on' : ''
+        }" data-act="fav" data-id="${it.id}" title="${faved ? '取消收藏' : '收藏'}"><i class="fa-${faved ? 'solid' : 'regular'
+        } fa-star"></i></button>${isAdmin
           ? `<div class="card-menu-wrap">
                <button class="card-fab menu" data-act="card-menu" data-id="${it.id}" title="更多操作"><i class="fa-solid fa-ellipsis-vertical"></i></button>
                <div class="card-menu-pop">
@@ -1728,7 +1722,7 @@ function renderGrid() {
                </div>
              </div>`
           : ''
-      }</div>`;
+        }</div>`;
       // 下载按钮旁的动作键(同尺寸、并列在左侧):手机=分享,电脑图片=复制
       const shareBtn =
         (showShare
@@ -1739,37 +1733,32 @@ function renderGrid() {
           : '');
       const thumbInner = previewSrc
         ? `<img src="${previewSrc}"${
-            // 图片预览链:缩略图→(缩略图坏)原图→(再坏)占位;onerror 链由 __mmImgErr 驱动
-            it.type === 'image' && it.thumb_url ? ` data-fb="${escapeHtml(it.file_url)}"` : ''
-          } onerror="window.__mmImgErr && window.__mmImgErr(this)" loading="lazy" decoding="async" />`
+        // 图片预览链:缩略图→(缩略图坏)原图→(再坏)占位;onerror 链由 __mmImgErr 驱动
+        it.type === 'image' && it.thumb_url ? ` data-fb="${escapeHtml(it.file_url)}"` : ''
+        } onerror="window.__mmImgErr && window.__mmImgErr(this)" loading="lazy" decoding="async" />`
         : isMedia
           ? `<div class="text-slate-300 text-xs">无预览</div>`
           : `<div class="doc-icon ${meta.cls}"><i class="fa-solid ${meta.icon}"></i></div>`; // 无预览图的 PDF/Office 回退类型图标
       return `
-        <div class="media-card${SELECTED.has(it.id) ? ' picked' : ''}" data-id="${it.id}"${
-          pindex !== undefined ? ` data-pindex="${pindex}"` : ''
+        <div class="media-card${SELECTED.has(it.id) ? ' picked' : ''}" data-id="${it.id}"${pindex !== undefined ? ` data-pindex="${pindex}"` : ''
         }>
-          <div class="media-thumb" data-preview="${it.file_url}" data-kind="${
-            it.type
-          }" data-title="${escapeHtml(it.title)}">
+          <div class="media-thumb" data-preview="${it.file_url}" data-kind="${it.type
+        }" data-title="${escapeHtml(it.title)}">
             <span class="card-check"><i class="fa-solid fa-check"></i></span>
             ${thumbInner}
-            ${
-              it.type !== 'image'
-                ? `<span class="type-badge ${meta.cls}"><i class="fa-solid ${
-                    it.type === 'video' ? 'fa-play' : meta.icon
-                  }"></i>${meta.label}</span>`
-                : '' // 图片是无标的默认态:网格更安静,视频/文档一眼跳出
-            }
+            ${it.type !== 'image'
+          ? `<span class="type-badge ${meta.cls}"><i class="fa-solid ${it.type === 'video' ? 'fa-play' : meta.icon
+          }"></i>${meta.label}</span>`
+          : '' // 图片是无标的默认态:网格更安静,视频/文档一眼跳出
+        }
             ${it.type === 'video' ? `<span class="play-badge"><i class="fa-solid fa-play"></i></span>` : ''}
-            ${
-              it.type === 'video' && it.duration
-                ? `<span class="dur-pill">${fmtDuration(it.duration)}</span>`
-                : ''
-            }
+            ${it.type === 'video' && it.duration
+          ? `<span class="dur-pill">${fmtDuration(it.duration)}</span>`
+          : ''
+        }
             <button class="download-btn" data-act="download" data-url="${it.file_url}" data-name="${escapeHtml(
-              it.filename || it.title,
-            )}" title="下载"><i class="fa-solid fa-download"></i></button>
+          it.filename || it.title,
+        )}" title="下载"><i class="fa-solid fa-download"></i></button>
             ${shareBtn}
             ${cardActions}
           </div>
@@ -1873,7 +1862,7 @@ async function fetchItemFile(
       const chunks: Uint8Array[] = [];
       let loaded = 0;
       let lastPct = -1;
-      for (;;) {
+      for (; ;) {
         const { done, value } = await reader.read();
         if (done) break;
         if (!value) continue;
@@ -2662,11 +2651,20 @@ function bindPreviewLoading(body: HTMLElement, item: PreviewItem) {
     text.textContent = t;
     overlay.classList.remove('lb-loading-done');
   };
-  const fail = () => {
+  const fail = (mediaErr?: MediaError | null) => {
     overlay.classList.remove('lb-loading-done');
     overlay.classList.add('error');
-    overlay.innerHTML =
-      '<i class="fa-solid fa-triangle-exclamation"></i><span class="lb-loading-text">加载失败,请检查网络</span><button class="lb-retry-btn" data-act="lb-retry">重试</button>';
+    // 区分"解码/格式不支持"与真正的网络错误:项目不转码,HEVC/H.265 等编码
+    // 在多数浏览器上会触发 DECODE(3)/SRC_NOT_SUPPORTED(4),提示编码问题并给下载出路。
+    const code = mediaErr?.code;
+    const isCodec = code === 3 || code === 4;
+    const msg = isCodec
+      ? '此视频编码当前浏览器不支持(可能为 HEVC/H.265),请下载后用本地播放器观看'
+      : '加载失败,请检查网络';
+    const btn = isCodec
+      ? `<button class="lb-retry-btn" data-act="lb-download" data-url="${item.src}"><i class="fa-solid fa-download"></i> 下载后查看</button>`
+      : `<button class="lb-retry-btn" data-act="lb-retry">重试</button>`;
+    overlay.innerHTML = `<i class="fa-solid fa-triangle-exclamation"></i><span class="lb-loading-text">${msg}</span>${btn}`;
   };
   if (item.kind === 'image') {
     const img = body.querySelector('img');
@@ -2674,7 +2672,7 @@ function bindPreviewLoading(body: HTMLElement, item: PreviewItem) {
     if (img.complete && img.naturalWidth > 0) hide();
     else {
       img.addEventListener('load', hide, { once: true });
-      img.addEventListener('error', fail, { once: true });
+      img.addEventListener('error', () => fail(), { once: true });
     }
   } else if (item.kind === 'video') {
     const v = body.querySelector('video');
@@ -2699,7 +2697,7 @@ function bindPreviewLoading(body: HTMLElement, item: PreviewItem) {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ duration: d }),
-          }).catch(() => {}); // 回填失败静默:下次播放再试
+          }).catch(() => { }); // 回填失败静默:下次播放再试
         }
       },
       { once: true },
@@ -2716,7 +2714,7 @@ function bindPreviewLoading(body: HTMLElement, item: PreviewItem) {
         if (p > 0) text.textContent = `缓冲中 ${p}%`;
       }
     });
-    v.addEventListener('error', fail, { once: true });
+    v.addEventListener('error', () => fail(v.error), { once: true });
   } else if (item.kind === 'pdf') {
     const f = body.querySelector('iframe');
     if (!f) return;
@@ -2851,7 +2849,7 @@ function initLightbox() {
       renderPreview();
       return;
     }
-    if (target.closest('img, video, iframe, button, .lb-office, .lb-loading')) return;
+    if (target.closest('img, video, iframe, button, .lb-office')) return;
     closeLightbox();
   });
   // 键盘:← → 切换,Esc 关闭
@@ -3261,7 +3259,7 @@ async function uploadFileChunked(
     });
   } catch (e) {
     // 失败时 best-effort 清理远端分片,不留垃圾 multipart 会话
-    apiT(`/api/upload/mp?step=abort&${qs}`, { method: 'POST' }, 30_000).catch(() => {});
+    apiT(`/api/upload/mp?step=abort&${qs}`, { method: 'POST' }, 30_000).catch(() => { });
     throw e;
   }
 }
@@ -3303,6 +3301,59 @@ function probeVideoDuration(file: File): Promise<number | null> {
       done(isFinite(video.duration) && video.duration > 0 ? Math.round(video.duration * 10) / 10 : null);
     video.onerror = () => done(null);
     window.setTimeout(() => done(null), 8000); // 怪异编码元数据永不返回时的兑底
+  });
+}
+
+/** 上传前粗判是否视频(服务端仍权威判 type):用于决定是否做编码探测 */
+function looksLikeVideo(file: File): boolean {
+  return (
+    file.type.startsWith('video/') || /\.(mp4|webm|ogv|mov|m4v)$/i.test(file.name)
+  );
+}
+
+/**
+ * 探测当前浏览器能否解码该视频的视频轨。
+ * 背景:项目不转码,原样入库,在线播放完全依赖浏览器解码。
+ * HEVC/H.265(iPhone 拍摄、录屏常见)在多数 Chrome/Edge/Firefox 上解不了视频轨,
+ * 表现为「有声音、画面黑屏」。这里在上传前拦下这类文件,提示转成 H.264 再传。
+ * 判定:元数据到达后视频轨尺寸为 0(无可解码画面),或解码报错 → false;
+ * 超时等不确定情况一律放行(true),避免误伤正常 H.264 大文件。
+ */
+function probeVideoDecodable(file: File, timeoutMs = 10000): Promise<boolean> {
+  return new Promise((resolve) => {
+    const video = document.createElement('video');
+    video.preload = 'auto';
+    video.muted = true;
+    video.playsInline = true;
+    const objUrl = URL.createObjectURL(file);
+    let settled = false;
+    const finish = (ok: boolean) => {
+      if (settled) return;
+      settled = true;
+      URL.revokeObjectURL(objUrl);
+      video.removeAttribute('src');
+      video.load();
+      resolve(ok);
+    };
+    // 视频轨可解码:readyState 到 HAVE_CURRENT_DATA 且拿到非零画面尺寸
+    const check = () => {
+      if (video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0) finish(true);
+    };
+    video.addEventListener('loadeddata', check);
+    video.addEventListener('canplay', check);
+    video.addEventListener('progress', check);
+    video.addEventListener('error', () => finish(false));
+    video.addEventListener('loadedmetadata', () => {
+      // 元数据已到但画面尺寸为 0:基本可断定视频轨解不出(HEVC 等)。给短暂宽限再判。
+      if (video.videoWidth === 0 || video.videoHeight === 0) {
+        window.setTimeout(check, 1500);
+        window.setTimeout(() => finish(false), 3000);
+      }
+    });
+    video.src = objUrl;
+    video.load();
+    // 兜底:超时仍未确证,按放行处理,不阻断正常上传
+    window.setTimeout(() => finish(true), timeoutMs);
   });
 }
 
@@ -3610,6 +3661,20 @@ async function handleFileChosen(file: File) {
     return toast('仅支持图片、视频、PDF、Word、Excel、HEIC', true);
   }
   const seq = itemModalSeq; // 弹窗会话:上传途中弹窗被重开则结果作废
+  // 视频:上传前探测当前浏览器能否解码,解不了(HEVC 等)直接拦下,避免入库后在线黑屏
+  if (looksLikeVideo(file)) {
+    status.textContent = '检测视频编码…';
+    const decodable = await probeVideoDecodable(file);
+    if (seq !== itemModalSeq) return; // 探测期间弹窗被重开:作废
+    if (!decodable) {
+      status.textContent = '';
+      return toast(
+        '此视频编码(可能为 HEVC/H.265)通用性差,多数浏览器无法在线播放(有声无画),请转成 H.264(MP4) 后再上传',
+        true,
+      );
+    }
+    status.textContent = '';
+  }
 
   ($('#item-save') as HTMLButtonElement).disabled = true;
   bgHold(); // 用户上传:后台缓存引擎让路(上行带宽优先给上传)
@@ -3679,9 +3744,8 @@ async function handleFileChosen(file: File) {
     // 预览区:图片/视频直接展示,PDF 内嵌,Word/Excel 显示类型图标
     const meta = TYPE_META[type];
     const sizeMb = (work.size / 1024 / 1024).toFixed(1);
-    const cap = `<div class="text-xs text-slate-500">${escapeHtml(work.name)}<br/>${meta.label} · ${sizeMb}MB${
-      compressed.note ? ` · ${compressed.note}` : ''
-    }</div>`;
+    const cap = `<div class="text-xs text-slate-500">${escapeHtml(work.name)}<br/>${meta.label} · ${sizeMb}MB${compressed.note ? ` · ${compressed.note}` : ''
+      }</div>`;
     preview.classList.remove('hidden');
     if (type === 'image') preview.innerHTML = `<img src="${thumbUrl || main.url}" alt="预览"/>${cap}`;
     else if (type === 'video') preview.innerHTML = `<video src="${main.url}" muted></video>${cap}`;
@@ -3978,14 +4042,14 @@ async function openStorageModal() {
     if (list)
       list.innerHTML = d.orgs.length
         ? d.orgs
-            .map(
-              (o) => `<div class="list-row">
+          .map(
+            (o) => `<div class="list-row">
                 <span class="grow">${escapeHtml(o.name)}</span>
                 <span class="storage-bytes">${fmtBytes(o.bytes)}</span>
                 <span class="storage-count">${o.count} 个</span>
               </div>`,
-            )
-            .join('')
+          )
+          .join('')
         : `<div class="text-sm text-slate-400 py-3">暂无数据</div>`;
   } catch (e) {
     if (list)
@@ -4003,14 +4067,14 @@ async function refreshOrgList() {
   const host = $('#org-list') as HTMLElement;
   host.innerHTML = orgs.length
     ? orgs
-        .map(
-          (o) => `<div class="list-row">
+      .map(
+        (o) => `<div class="list-row">
             <span class="grow">${escapeHtml(o.name)} <span class="text-xs text-slate-400">(${o.slug})</span></span>
             <button class="mini-btn" data-act="switch-org" data-id="${o.id}" title="切换到此公司"><i class="fa-solid fa-arrow-right"></i></button>
             <button class="mini-btn danger" data-act="del-org" data-id="${o.id}" data-name="${escapeHtml(o.name)}" title="删除公司"><i class="fa-solid fa-trash"></i></button>
           </div>`,
-        )
-        .join('')
+      )
+      .join('')
     : `<div class="text-sm text-slate-400 py-3">还没有公司,先在上方添加。</div>`;
 
   host.querySelectorAll('[data-act="del-org"]').forEach((b) =>
@@ -4173,14 +4237,14 @@ async function refreshUserList() {
   const { users } = await api<{ users: any[] }>(`/api/users?orgId=${encodeURIComponent(queryOrg)}`);
   ($('#user-list') as HTMLElement).innerHTML = users.length
     ? users
-        .map(
-          (u) => `<div class="list-row">
+      .map(
+        (u) => `<div class="list-row">
             <span class="grow">${escapeHtml(u.username)}</span>
             <span class="tag ${u.role}">${u.role}</span>
             ${u.role === 'superadmin' ? '' : `<button class="mini-btn danger" data-del="${u.id}" title="删除"><i class="fa-solid fa-trash"></i></button>`}
           </div>`,
-        )
-        .join('')
+      )
+      .join('')
     : `<div class="text-sm text-slate-400 py-3">该公司暂无用户。</div>`;
 
   ($('#user-list') as HTMLElement).querySelectorAll('[data-del]').forEach((b) =>
