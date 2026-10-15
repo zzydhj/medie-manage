@@ -1,0 +1,24 @@
+---
+/**
+ * 界面截图加载失败时的降级占位:用纯 CSS 画一张"侧栏 + 卡片网格"的线框图。
+ * 由 index.astro 的脚本在 img error 时给外层容器加 *-missing 类来显隐,
+ * 保证官网首页任何情况下都不会出现浏览器破图图标。
+ */
+interface Props {
+    /** 线框里的色块数量 */
+    tiles?: number;
+    /** 覆盖在图上的说明文案 */
+    note?: string;
+}
+const { tiles = 8, note = "界面截图准备中" } = Astro.props;
+---
+
+<div class="mk-wire" aria-hidden="true">
+    <div class="mk-wire-side">
+        {Array.from({ length: 5 }, () => <span class="mk-wire-bar" />)}
+    </div>
+    <div class="mk-wire-grid">
+        {Array.from({ length: tiles }, () => <span class="mk-wire-tile" />)}
+    </div>
+    <span class="mk-wire-note">{note}</span>
+</div>

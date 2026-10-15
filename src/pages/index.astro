@@ -1,437 +1,680 @@
 ---
-import Base from '../layouts/Base.astro';
+import Marketing from "../layouts/Marketing.astro";
+import ShotFallback from "../components/landing/ShotFallback.astro";
+import { SITE, SIGNUP_LABEL } from "../lib/site";
 
-// 服务端已知登录态(中间件注入),用于首屏直接决定是否需要跳转
+// 已登录用户访问首页时,右上角给「进入控制台」而不是登录/注册
 const user = Astro.locals.user;
-if (!user) {
-  return Astro.redirect('/login');
-}
+
+// 开通相关文案随站点配置切换:自助注册关闭时不承诺「提交即开通」
+const signup = SIGNUP_LABEL;
+const heroCta = SITE.openRegistration ? "立即免费开通" : "申请开通体验";
+const heroNote = SITE.openRegistration
+    ? "无需信用卡 · 提交即建好属于你公司的独立素材库"
+    : SITE.contact
+        ? `人工开户 · 致电 ${SITE.contact} 当天开通,含 ${SITE.trialDays} 天全功能试用`
+        : `人工开户 · 联系管理员当天开通,含 ${SITE.trialDays} 天全功能试用`;
+const signupStep = SITE.openRegistration
+    ? {
+          title: "注册开通",
+          desc: "填写公司名称与管理员账号,提交后系统立刻建好属于你公司的独立素材库,并自动登录进入后台。",
+      }
+    : {
+          title: "申请开通",
+          desc: "联系管理员提供公司名称与管理员账号,由我们为你建好独立的素材库并开通试用,当天可用。",
+      };
+
+// ============================================================
+//  站点内容:改文案 / 改价格只需要动下面这几个数组
+// ============================================================
+
+/** 三档订阅价格(占位价,按实际商务策略调整即可) */
+const PLANS = [
+    {
+        name: "体验版",
+        price: "0",
+        unit: "/ 14 天",
+        desc: "先把全流程跑通,再决定要不要付费",
+        bill: "到期后可升级保留全部数据",
+        features: [
+            "1 家公司独立素材库",
+            "3 个成员账号",
+            "2 GB 存储空间",
+            "全部功能不限用",
+            "图片自动压缩与缩略图",
+        ],
+        cta: signup,
+        href: "/register",
+        featured: false,
+    },
+    {
+        name: "标准版",
+        price: "199",
+        unit: "/ 月",
+        was: "¥299",
+        desc: "给一个真正在管素材的团队",
+        bill: "年付 ¥1,999(相当于 10 个月)",
+        features: [
+            "20 个成员账号",
+            "200 GB 存储空间",
+            "无限菜单层级与素材数量",
+            "批量下载 / 浏览器内 ZIP 打包",
+            "手机端系统级多文件分享",
+            "工单优先响应(1 个工作日内)",
+        ],
+        cta: "开通标准版",
+        href: "/register",
+        featured: true,
+        tag: "最受欢迎",
+    },
+    {
+        name: "旗舰版",
+        price: "599",
+        unit: "/ 月",
+        desc: "多公司统一托管与深度支持",
+        bill: "年付 ¥5,999(相当于 10 个月)",
+        features: [
+            "标准版全部能力",
+            "成员账号数不限",
+            "1 TB 存储空间",
+            "多公司统一后台托管",
+            "协助从网盘/服务器迁移存量素材",
+            "7×12 专属对接",
+        ],
+        cta: "详谈开通",
+        href: "/register",
+        featured: false,
+    },
+];
+
+/** 核心能力 */
+const FEATURES = [
+    {
+        icon: "fa-building-shield",
+        title: "按公司彻底隔离",
+        desc: "每家公司的菜单、素材、成员各自独立。文件以公司前缀存放,跨公司的访问在服务端直接判死,不是靠前端藏起来。",
+    },
+    {
+        icon: "fa-sitemap",
+        title: "最多 4 级分类目录",
+        desc: "按部门、项目、活动自由建树,拖拽即可排序。左侧定位、右侧看货,素材再多也不会堆成一锅。",
+    },
+    {
+        icon: "fa-file-lines",
+        title: "全格式在线预览",
+        desc: "图片、视频、PDF、Word、Excel 不下载直接看。苹果 HEIC 上传即转 JPG,相机原图自动做视觉无损压缩。",
+    },
+    {
+        icon: "fa-bolt",
+        title: '为"翻得快"做的引擎',
+        desc: "缩略图预生成、整视图并行铺页、本地缓存复用;老素材缺图会被后台自动补齐,首屏不该等转圈。",
+    },
+    {
+        icon: "fa-download",
+        title: "批量下载与分享",
+        desc: "勾选多份素材,逐个下载或在浏览器里打成一个 ZIP;手机端可一次调起系统分享,微信、QQ 直接发出去。",
+    },
+    {
+        icon: "fa-user-gear",
+        title: "三级成员权限",
+        desc: "超级管理员 / 公司管理员 / 普通成员。管理员负责上传与整理分类,成员只负责取用,职责清清楚楚。",
+    },
+    {
+        icon: "fa-calendar-check",
+        title: "会员到期可控",
+        desc: "按公司设置到期日,到期后停止一切数据下发(连文件字节都拿不到),续费立即恢复——商用闭环自带。",
+    },
+    {
+        icon: "fa-mobile-screen",
+        title: "手机上也好用",
+        desc: "响应式布局、底部导航、iPhone 安全区适配。在门店、在仓库、在客户现场,掏手机就能翻到要的那张图。",
+    },
+];
+
+/** 界面截图(放在 public/landing/ 下,文件名即路径;tiles = 缺图时线框占位的色块数) */
+const SHOTS = [
+    {
+        src: "/landing/shot-grid.png",
+        title: "素材网格",
+        desc: "多级菜单 + 多列缩略图卡片",
+        tiles: 8,
+    },
+    {
+        src: "/landing/shot-lightbox.png",
+        title: "大图预览",
+        desc: "关灯式全屏,左右连续翻图",
+        tiles: 4,
+    },
+    {
+        src: "/landing/shot-upload.png",
+        title: "拖拽上传",
+        desc: "批量拖入,重复自动跳过",
+        tiles: 3,
+    },
+    {
+        src: "/landing/shot-admin.png",
+        title: "成员管理",
+        desc: "开账号、分权限、看用量",
+        tiles: 6,
+    },
+    {
+        src: "/landing/shot-mobile.png",
+        title: "手机端",
+        desc: "同一套数据,随身取用",
+        tiles: 3,
+    },
+];
+
+/** 上手三步(首步文案随开通方式切换) */
+const STEPS = [
+    signupStep,
+    {
+        title: "建分类、传素材",
+        desc: "按部门或项目搭好菜单树,把图片视频文档整批拖进来;重复文件自动跳过,大图自动压缩并生成缩略图。",
+    },
+    {
+        title: "拉同事进来随取随用",
+        desc: "给同事开成员账号,对方登录后只做一件事:找到要用的那份素材,预览、下载、发出去。",
+    },
+];
+
+/** 保障 */
+const ASSURANCE = [
+    {
+        icon: "fa-lock",
+        title: "数据只属于你",
+        desc: '公司之间命名空间完全隔离,平台内不存在"别人能翻到你家素材"的路径。',
+    },
+    {
+        icon: "fa-server",
+        title: "文件不落第三方",
+        desc: "素材存放在 Cloudflare R2 对象存储,不做任何转售、公开展示或二次分发。",
+    },
+    {
+        icon: "fa-shield-halved",
+        title: "传输与凭证加固",
+        desc: "全站 HTTPS,会话令牌 HMAC-SHA256 签名并存于 HttpOnly Cookie,脚本读不到。",
+    },
+    {
+        icon: "fa-fingerprint",
+        title: "密码不可逆存储",
+        desc: "PBKDF2-SHA256 加盐十万轮迭代,数据库里只有盐与哈希,没有明文。",
+    },
+    {
+        icon: "fa-rotate",
+        title: "到期不丢数据",
+        desc: "到期只是停止读写,分类结构与历史素材完整保留,续费后立刻原样恢复。",
+    },
+    {
+        icon: "fa-headset",
+        title: "问题有人接",
+        desc: "功能建议与故障反馈直达开发方,标准版及以上享工单优先处理。",
+    },
+];
+
+/** 常见问题 */
+const FAQS = [
+    {
+        q: "它和网盘有什么区别?",
+        a: '网盘是"个人文件仓库",这里是"团队素材货架"。区别在于:面向业务的分类目录、卡片式预览、按公司隔离的租户边界、成员权限分级,以及会员到期控制。你要的不是存,是让同事在三十秒内找到能用的那张图。',
+    },
+    {
+        q: "支持哪些文件格式?",
+        a: "图片(JPG / PNG / WebP / GIF / BMP / SVG / HEIC)、视频(MP4 / WebM / OGV / MOV / M4V)、PDF、Word(doc / docx)、Excel(xls / xlsx)。单个文件上限 100MB。苹果 HEIC 在上传时即转成 JPG,保证任何设备打开都不挑浏览器。",
+    },
+    {
+        q: "为什么有的视频能在线播,有的只有声音没有画面?",
+        a: '因为平台不做服务端转码,在线播放依赖浏览器自身的解码能力。HEVC / H.265(iPhone 拍摄、屏幕录制常见)在多数 Chrome、Edge、Firefox 上解不出视频轨,就会出现"有声音、画面黑屏"。解决办法是把视频转成 H.264(MP4) 再上传——现在新上传时系统会自动检测并提前提醒你,已入库的老素材仍可正常下载后用本地播放器观看。',
+    },
+    {
+        q: "存储用满了能扩吗?",
+        a: "可以。套餐内的存储额度可以按公司规模单独调整,详谈即可,不必为了多出来的几十 GB 直接跳档。",
+    },
+    {
+        q: "试用到期后,已经上传的素材会被删掉吗?",
+        a: "不会。到期后系统停止一切数据的读写与下发,但分类结构、素材文件、成员账号都完整保留;续费后立即恢复原样。只有长期不续且双方确认不再使用时,才会协商数据导出与清理。",
+    },
+    {
+        q: "能从现有网盘 / 服务器把素材搬过来吗?",
+        a: "能。小批量直接拖拽批量上传即可,重复文件会自动跳过;存量很大或需要保留原目录层级的,旗舰版提供迁移协助。",
+    },
+    {
+        q: "可以私有部署或用我们自己的域名吗?",
+        a: "可以。旗舰版支持独立域名绑定与数据迁移协助,具体范围按部署形态另议。",
+    },
+];
+
+const STATS = [
+    { v: "5 类", k: "素材格式" },
+    { v: "4 级", k: "分类目录" },
+    { v: "3 级", k: "成员权限" },
+    { v: "100MB", k: "单文件上限" },
+    { v: "14 天", k: "免费试用" },
+];
 ---
 
-<Base title="资料素材库">
-  <!-- ===== 顶栏 ===== -->
-  <header class="app-header">
-    <button id="menu-toggle" class="header-btn menu-toggle" title="菜单">
-      <i class="fa-solid fa-bars"></i>
-    </button>
-    <span class="brand"><i class="fa-solid fa-book-open mr-1"></i> 资料素材库</span>
-
-    <!-- 公司切换器:仅超级管理员可见(客户端根据 /api/me 填充);右侧带到期 chip -->
-    <span id="org-switch-wrap" class="org-switch-wrap hidden">
-      <select id="org-switcher" class="org-select" title="切换公司"></select>
-      <!-- 会员到期 chip:点击弹日期选择器设置/清除当前公司到期日;到期公司账号登录被拒 -->
-      <button id="org-expiry-chip" class="expiry-chip" type="button" title="点击设置会员到期日期"></button>
-      <input id="org-expiry-input" type="date" class="expiry-input-offscreen" />
-    </span>
-    <!-- 非超管:静态公司名(与超管切换器同款白胶囊,只读不可切) -->
-    <span id="org-name-badge" class="org-select org-name-static hidden"></span>
-    <!-- VIP 角标:金渐变+皇冠+呼吸光,置左侧身份区,传达付费开通感 -->
-    <span class="vip-badge" title="VIP 已开通"><i class="fa-solid fa-crown"></i>VIP</span>
-
-    <div class="spacer"></div>
-
-    <!-- 类型快捷筛选:分段 chips(选项常可见+激活态明确,比下拉直观);窄屏随搜索框搬进抽屉 -->
-    <div class="type-filter" id="type-filter">
-      <button class="tf-chip active" data-tf="" type="button" title="显示全部类型">
-        <i class="fa-solid fa-layer-group"></i><span>全部</span>
-      </button>
-      <button class="tf-chip" data-tf="image" type="button" title="只显示图片">
-        <i class="fa-regular fa-image"></i><span>图片</span>
-      </button>
-      <button class="tf-chip" data-tf="video" type="button" title="只显示视频">
-        <i class="fa-solid fa-film"></i><span>视频</span>
-      </button>
-      <button class="tf-chip" data-tf="doc" type="button" title="只显示文档(PDF/Word/Excel)">
-        <i class="fa-regular fa-file-lines"></i><span>文档</span>
-      </button>
-    </div>
-
-    <!-- 搜索:按文件名或标题过滤当前公司素材(全公司范围) -->
-    <div class="search-control" id="search-control">
-      <i class="fa-solid fa-magnifying-glass search-icon"></i>
-      <!-- type=search:浏览器不会把保存的登录凭据自动填进搜索类输入框;name=q 进一步明确语义 -->
-      <input id="search-input" type="search" name="q" placeholder="搜索文件名 / 标题" autocomplete="off" />
-      <button id="search-clear" class="search-clear hidden" title="清空搜索" type="button">
-        <i class="fa-solid fa-xmark"></i>
-      </button>
-    </div>
-
-    <!-- 批量选择:开启后卡片可勾选,支持逐个下载 / 手机端多文件分享 -->
-    <button id="btn-batch" class="header-btn" title="批量选择">
-      <i class="fa-solid fa-list-check"></i><span class="hidden sm:inline">批量</span>
-    </button>
-
-    <!-- 每行列数(卡片密度)调节:自定义下拉,选择记忆到本地 -->
-    <div class="cols-control" id="cols-control">
-      <button class="cols-trigger" id="col-trigger" title="每行显示列数" aria-haspopup="listbox" aria-expanded="false">
-        <i class="fa-solid fa-table-columns"></i>
-        <span id="col-label">10 列</span>
-        <i class="fa-solid fa-chevron-down cols-caret"></i>
-      </button>
-      <div class="cols-menu" id="col-menu" role="listbox" aria-label="每行列数">
-        <button class="cols-option" data-cols="4" role="option">4 列</button>
-        <button class="cols-option" data-cols="6" role="option">6 列</button>
-        <button class="cols-option" data-cols="8" role="option">8 列</button>
-        <button class="cols-option" data-cols="10" role="option">10 列</button>
-        <button class="cols-option" data-cols="12" role="option">12 列</button>
-        <button class="cols-option" data-cols="16" role="option">16 列</button>
-      </div>
-    </div>
-
-    <span id="whoami" class="text-xs font-semibold opacity-90 hidden sm:inline"></span>
-    <button id="btn-companies" class="header-btn hidden" title="公司管理">
-      <i class="fa-solid fa-building"></i><span class="hidden sm:inline">公司</span>
-    </button>
-    <button id="btn-users" class="header-btn hidden" title="用户管理">
-      <i class="fa-solid fa-users"></i><span class="hidden sm:inline">用户</span>
-    </button>
-    <!-- 补缩略图:给功能上线前传的老图片/老 PDF 一次性补生成缩略图(PDF 为首页预览图)(管理员可见) -->
-    <button id="btn-backfill" class="header-btn hidden" title="为无缩略图的老图片/PDF 补生成缩略图(预览图)">
-      <i class="fa-solid fa-images"></i><span class="hidden sm:inline">补缩略图</span>
-    </button>
-    <button id="btn-storage" class="header-btn hidden" title="存储用量">
-      <i class="fa-solid fa-hard-drive"></i><span class="hidden sm:inline">用量</span>
-    </button>
-    <button id="btn-logout" class="header-btn" title="退出登录">
-      <i class="fa-solid fa-right-from-bracket"></i><span class="hidden sm:inline">退出</span>
-    </button>
-  </header>
-
-  <!-- ===== 侧边栏 ===== -->
-  <div id="sidebar-overlay" class="sidebar-overlay"></div>
-  <aside id="sidebar" class="sidebar">
-    <div class="sidebar-scroll">
-      <div id="menu-tree"></div>
-      <button id="add-root-menu" class="add-root-btn hidden">
-        <i class="fa-solid fa-plus mr-1"></i> 新增一级菜单
-      </button>
-    </div>
-  </aside>
-
-  <!-- ===== 主体卡片区 ===== -->
-  <main class="main-content">
-    <div id="card-grid" class="card-grid"></div>
-  </main>
-
-  <!-- ===== 手机端:搜索抽屉(窄屏时 #search-control 由 JS 搬进来,保持单一输入源) ===== -->
-  <div id="mobile-search" class="mobile-search"></div>
-
-  <!-- ===== 手机端:底部导航(搜索 / 菜单 / 批量 / 账户) ===== -->
-  <nav id="mobile-nav" class="mobile-nav">
-    <button class="mnav-btn" id="mnav-search" type="button">
-      <i class="fa-solid fa-magnifying-glass"></i><span>搜索</span>
-    </button>
-    <button class="mnav-btn" id="mnav-menu" type="button">
-      <i class="fa-solid fa-bars"></i><span>菜单</span>
-    </button>
-    <button class="mnav-btn" id="mnav-batch" type="button">
-      <i class="fa-solid fa-list-check"></i><span>批量</span>
-    </button>
-    <button class="mnav-btn" id="mnav-account" type="button">
-      <i class="fa-regular fa-user"></i><span>账户</span>
-    </button>
-  </nav>
-
-  <!-- ===== 批量选择操作条:进入批量模式后出现(手机端悬在底部导航上方) ===== -->
-  <div id="batch-bar" class="batch-bar hidden">
-    <span class="batch-count">已选 <b id="batch-count">0</b> 项</span>
-    <button class="batch-btn ghost" id="batch-all" type="button" title="全选 / 取消全选">
-      <i class="fa-solid fa-list-check"></i><span>全选</span>
-    </button>
-    <button class="batch-btn" id="batch-download" type="button" title="逐个下载所选文件">
-      <i class="fa-solid fa-download"></i><span>下载</span>
-    </button>
-    <button class="batch-btn" id="batch-share" type="button" title="调起系统分享,可一次发多个文件">
-      <i class="fa-solid fa-share-nodes"></i><span>分享</span>
-    </button>
-    <button class="batch-btn ghost" id="batch-zip" type="button" title="打包成一个 ZIP 下载(浏览器拦截多文件下载时用)">
-      <i class="fa-solid fa-file-zipper"></i><span>打包</span>
-    </button>
-    <!-- 管理类操作:仅管理员可见(JS 按 isAdmin 去掉 hidden);普通用户批量条只有下载/分享 -->
-    <button class="batch-btn ghost hidden" id="batch-move" type="button" title="移动到其它分组">
-      <i class="fa-solid fa-folder-open"></i><span>移动</span>
-    </button>
-    <button class="batch-btn ghost danger hidden" id="batch-delete" type="button" title="删除所选素材">
-      <i class="fa-solid fa-trash"></i><span>删除</span>
-    </button>
-    <button class="batch-btn ghost" id="batch-exit" type="button" title="退出批量">
-      <i class="fa-solid fa-xmark"></i>
-    </button>
-  </div>
-
-  <!-- ===== 手机端:账户 sheet(身份 + 公司切换 + 管理入口 + 退出) ===== -->
-  <div id="account-mask" class="account-mask"></div>
-  <div id="account-sheet" class="account-sheet">
-    <div class="account-head">
-      <div class="account-avatar"><i class="fa-solid fa-user"></i></div>
-      <div class="account-id">
-        <div id="account-name" class="account-name">—</div>
-        <div id="account-role" class="account-role"></div>
-      </div>
-      <!-- 手机端顶栏隐藏,VIP 角标在账户 sheet 头部补一个落点 -->
-      <span class="vip-badge vip-badge-sm" title="VIP 已开通"><i class="fa-solid fa-crown"></i>VIP</span>
-      <button class="mini-btn" id="account-close" type="button" title="关闭">
-        <i class="fa-solid fa-xmark"></i>
-      </button>
-    </div>
-    <div class="account-body">
-      <div id="account-org-field" class="account-field hidden">
-        <label>当前公司</label>
-        <!-- 窄屏时 #org-switcher 由 JS 搬进来 -->
-      </div>
-      <button class="account-item hidden" id="account-companies" type="button">
-        <i class="fa-solid fa-building"></i><span>公司管理</span><i class="fa-solid fa-chevron-right arrow"></i>
-      </button>
-      <button class="account-item hidden" id="account-users" type="button">
-        <i class="fa-solid fa-users"></i><span>用户管理</span><i class="fa-solid fa-chevron-right arrow"></i>
-      </button>
-      <button class="account-item hidden" id="account-backfill" type="button">
-        <i class="fa-solid fa-images"></i><span>补生成缩略图</span><i class="fa-solid fa-chevron-right arrow"></i>
-      </button>
-      <button class="account-item hidden" id="account-storage" type="button">
-        <i class="fa-solid fa-hard-drive"></i><span>存储用量</span><i class="fa-solid fa-chevron-right arrow"></i>
-      </button>
-      <button class="account-item danger" id="account-logout" type="button">
-        <i class="fa-solid fa-right-from-bracket"></i><span>退出登录</span>
-      </button>
-    </div>
-  </div>
-
-  <!-- ===== 菜单 新增/编辑 弹窗 ===== -->
-  <div id="menu-modal" class="modal-mask">
-    <div class="modal-box">
-      <div class="modal-head">
-        <span id="menu-modal-title">新增菜单</span>
-        <button class="mini-btn" data-close="menu-modal"><i class="fa-solid fa-xmark"></i></button>
-      </div>
-      <div class="modal-body">
-        <div class="field">
-          <label>父级菜单</label>
-          <input id="menu-parent-label" type="text" disabled />
+<Marketing>
+    <!-- ===================== 顶部导航 ===================== -->
+    <nav class="mk-nav">
+        <div class="mk-wrap mk-nav-inner">
+            <a class="mk-logo" href="/">
+                <span class="mk-logo-mark"
+                    ><i class="fa-solid fa-book-open"></i></span
+                >
+                资料素材库
+            </a>
+            <div class="mk-nav-links">
+                <a href="#features">功能</a>
+                <a href="#gallery">界面</a>
+                <a href="#pricing">价格</a>
+                <a href="#assure">保障</a>
+                <a href="#faq">常见问题</a>
+            </div>
+            <div class="mk-nav-actions">
+                {
+                    user ? (
+                        <a class="mk-btn mk-btn-primary" href="/app">
+                            <i class="fa-solid fa-gauge-high" /> 进入控制台
+                        </a>
+                    ) : (
+                        <>
+                            <a
+                                class="mk-btn mk-btn-ghost mk-btn-sm"
+                                href="/login"
+                            >
+                                登录
+                            </a>
+                            <a
+                                class="mk-btn mk-btn-primary mk-btn-sm"
+                                href="/register"
+                            >
+                                {signup}
+                            </a>
+                        </>
+                    )
+                }
+            </div>
         </div>
-        <div class="field">
-          <label>菜单名称</label>
-          <input id="menu-name" type="text" placeholder="输入菜单名称" />
+    </nav>
+
+    <!-- ===================== Hero ===================== -->
+    <header class="mk-hero">
+        <span class="mk-glow mk-glow-a"></span>
+        <span class="mk-glow mk-glow-b"></span>
+        <div class="mk-wrap">
+            <span class="mk-eyebrow">
+                <i class="fa-solid fa-gift"></i> 注册即送 14 天全功能试用
+            </span>
+            <h1 class="mk-h1">
+                把全公司的素材<br />
+                放进一个<span class="mk-grad-text">找得到</span>的地方
+            </h1>
+            <p class="mk-lead">
+                资料素材库是为中小团队做的在线素材管理平台:按公司隔离、多级分类、
+                图片 / 视频 / PDF / Word / Excel 全格式预览、批量下载与分享。
+                不用装任何软件,打开浏览器就能用。
+            </p>
+            <div class="mk-hero-cta">
+                <a class="mk-btn mk-btn-primary mk-btn-lg" href="/register">
+                    <i class="fa-solid fa-rocket"></i>
+                    {heroCta}
+                </a>
+                <a class="mk-btn mk-btn-ghost mk-btn-lg" href="#pricing">
+                    <i class="fa-solid fa-tags"></i> 查看价格
+                </a>
+            </div>
+            <p class="mk-hero-note">
+                {heroNote}
+            </p>
+
+            <div class="mk-stats">
+                {
+                    STATS.map((s) => (
+                        <div class="mk-stat">
+                            <b class="mk-grad-text">{s.v}</b>
+                            <span>{s.k}</span>
+                        </div>
+                    ))
+                }
+            </div>
+
+            <div class="mk-shot mk-reveal">
+                <div class="mk-shot-bar">
+                    <i></i>
+                    <i></i>
+                    <i></i>
+                    <span class="mk-shot-url">media.zzydhj.com/app</span>
+                </div>
+                <img
+                    src="/landing/shot-grid.png"
+                    data-shot
+                    alt="资料素材库后台:左侧多级分类菜单与右侧素材卡片网格"
+                    width="1600"
+                    height="1000"
+                    loading="eager"
+                />
+                <ShotFallback note="素材网格界面截图准备中" />
+            </div>
         </div>
-      </div>
-      <div class="modal-foot">
-        <button class="btn btn-ghost" data-close="menu-modal">取消</button>
-        <button id="menu-save" class="btn btn-primary">保存</button>
-      </div>
-    </div>
-  </div>
+    </header>
 
-  <!-- ===== 菜单 移动到 弹窗(管理员:跨分组/改父级,补拖拽做不到的场景) ===== -->
-  <div id="menu-move-modal" class="modal-mask">
-    <div class="modal-box">
-      <div class="modal-head">
-        <span>移动菜单</span>
-        <button class="mini-btn" data-close="menu-move-modal"><i class="fa-solid fa-xmark"></i></button>
-      </div>
-      <div class="modal-body">
-        <div class="field">
-          <label id="menu-move-tip">移动到</label>
-          <select id="menu-move-parent"></select>
+    <!-- ===================== 功能 ===================== -->
+    <section class="mk-section" id="features">
+        <div class="mk-wrap">
+            <div class="mk-section-head mk-reveal">
+                <span class="mk-eyebrow"
+                    ><i class="fa-solid fa-puzzle-piece"></i> 功能</span
+                >
+                <h2 class="mk-h2" style="margin-top:16px">
+                    八件它真的替你想过的事
+                </h2>
+                <p class="mk-lead">
+                    不是把"文件夹"搬到网页上就完事,而是把素材从进库、整理、查找、预览到取用的整条路都铺平。
+                </p>
+            </div>
+            <div class="mk-grid">
+                {
+                    FEATURES.map((f) => (
+                        <article class="mk-card mk-reveal">
+                            <div class="mk-card-icon">
+                                <i class:list={["fa-solid", f.icon]} />
+                            </div>
+                            <h3 class="mk-h3">{f.title}</h3>
+                            <p>{f.desc}</p>
+                        </article>
+                    ))
+                }
+            </div>
         </div>
-      </div>
-      <div class="modal-foot">
-        <button class="btn btn-ghost" data-close="menu-move-modal">取消</button>
-        <button id="menu-move-confirm" class="btn btn-primary">移动</button>
-      </div>
-    </div>
-  </div>
+    </section>
 
-  <!-- ===== 素材 新增 弹窗 ===== -->
-  <div id="item-modal" class="modal-mask">
-    <div class="modal-box">
-      <div class="modal-head">
-        <span>新增素材</span>
-        <button class="mini-btn" data-close="item-modal"><i class="fa-solid fa-xmark"></i></button>
-      </div>
-      <div class="modal-body">
-        <div class="field">
-          <label>所属菜单</label>
-          <input id="item-menu-label" type="text" disabled />
+    <!-- ===================== 界面截图 ===================== -->
+    <section
+        class="mk-section"
+        id="gallery"
+        style="background:var(--mk-bg-soft)"
+    >
+        <div class="mk-wrap">
+            <div class="mk-section-head mk-reveal">
+                <span class="mk-eyebrow"
+                    ><i class="fa-solid fa-display"></i> 界面</span
+                >
+                <h2 class="mk-h2" style="margin-top:16px">
+                    长这样,没有惊喜也没有坑
+                </h2>
+                <p class="mk-lead">
+                    下面是真实系统的界面截图,不是设计稿。登录后看到的就是这些。
+                </p>
+            </div>
+            <div class="mk-gallery">
+                {
+                    SHOTS.map((s) => (
+                        <figure class="mk-figure mk-reveal">
+                            <img
+                                src={s.src}
+                                data-shot
+                                alt={`${s.title}界面截图`}
+                                width="1600"
+                                height="1000"
+                                loading="lazy"
+                            />
+                            <ShotFallback
+                                tiles={s.tiles}
+                                note={`${s.title}截图准备中`}
+                            />
+                            <figcaption>
+                                <b>{s.title}</b> · {s.desc}
+                            </figcaption>
+                        </figure>
+                    ))
+                }
+            </div>
         </div>
-        <div class="field">
-          <label>选择文件(图片 / 视频 / PDF / Word / Excel,可多选)</label>
-          <div id="dropzone" class="dropzone">
-            <i class="fa-solid fa-cloud-arrow-up text-2xl mb-2 block"></i>
-            点击或拖拽文件到此处上传(可多选,重复自动跳过)
-          </div>
-          <input id="file-input" type="file" accept="image/*,video/*,.pdf,.doc,.docx,.xls,.xlsx" multiple class="hidden" />
+    </section>
+
+    <!-- ===================== 上手三步 ===================== -->
+    <section class="mk-section" id="steps">
+        <div class="mk-wrap">
+            <div class="mk-section-head mk-reveal">
+                <span class="mk-eyebrow"
+                    ><i class="fa-solid fa-route"></i> 怎么开始</span
+                >
+                <h2 class="mk-h2" style="margin-top:16px">
+                    三步,今天就能用起来
+                </h2>
+            </div>
+            <div class="mk-steps">
+                {
+                    STEPS.map((s) => (
+                        <article class="mk-step mk-reveal">
+                            <h3 class="mk-h3">{s.title}</h3>
+                            <p>{s.desc}</p>
+                        </article>
+                    ))
+                }
+            </div>
         </div>
-        <div id="file-preview" class="preview-wrap hidden"></div>
-        <!-- 批量上传:选多个文件时展开,逐个上传并标注 新增 / 跳过重复 / 失败 -->
-        <div id="batch-panel" class="batch-panel hidden">
-          <div id="batch-list" class="batch-list"></div>
+    </section>
+
+    <!-- ===================== 价格 ===================== -->
+    <section
+        class="mk-section"
+        id="pricing"
+        style="background:var(--mk-bg-soft)"
+    >
+        <div class="mk-wrap">
+            <div class="mk-section-head mk-reveal">
+                <span class="mk-eyebrow"
+                    ><i class="fa-solid fa-tags"></i> 订阅价格</span
+                >
+                <h2 class="mk-h2" style="margin-top:16px">
+                    按公司算,不按人头卡你
+                </h2>
+                <p class="mk-lead">
+                    所有档位功能完整,差别只在成员数与存储额度。先试用,觉得值再付钱。
+                </p>
+            </div>
+
+            <div class="mk-plans">
+                {
+                    PLANS.map((p) => (
+                        <article
+                            class:list={[
+                                "mk-plan",
+                                "mk-reveal",
+                                { "mk-plan-featured": p.featured },
+                            ]}
+                        >
+                            {p.tag && <span class="mk-plan-tag">{p.tag}</span>}
+                            <div class="mk-plan-name">{p.name}</div>
+                            <p class="mk-plan-desc">{p.desc}</p>
+                            <div class="mk-price">
+                                <span>¥</span>
+                                <b>{p.price}</b>
+                                <span>{p.unit}</span>
+                                {p.was && <s>{p.was}</s>}
+                            </div>
+                            <div class="mk-plan-bill">{p.bill}</div>
+                            <ul>
+                                {p.features.map((f) => (
+                                    <li>
+                                        <i class="fa-solid fa-check" />
+                                        <span>{f}</span>
+                                    </li>
+                                ))}
+                            </ul>
+                            <a
+                                class:list={[
+                                    "mk-btn",
+                                    p.featured
+                                        ? "mk-btn-primary"
+                                        : "mk-btn-ghost",
+                                ]}
+                                href={p.href}
+                            >
+                                {p.cta}
+                            </a>
+                        </article>
+                    ))
+                }
+            </div>
+            <p class="mk-price-note">
+                价格为参考档位,存储与成员额度可按公司规模单独调整;需要发票、私有部署或存量迁移请另行沟通。
+            </p>
         </div>
-        <div class="field">
-          <label>标题</label>
-          <input id="item-title" type="text" name="item-title" placeholder="素材标题(默认取文件名)" autocomplete="off" />
+    </section>
+
+    <!-- ===================== 保障 ===================== -->
+    <section class="mk-section" id="assure">
+        <div class="mk-wrap">
+            <div class="mk-section-head mk-reveal">
+                <span class="mk-eyebrow"
+                    ><i class="fa-solid fa-shield-halved"></i> 保障</span
+                >
+                <h2 class="mk-h2" style="margin-top:16px">
+                    你敢把素材放进来,是因为这些底线在
+                </h2>
+            </div>
+            <div class="mk-assure">
+                {
+                    ASSURANCE.map((a) => (
+                        <div class="mk-assure-item mk-reveal">
+                            <i class:list={["fa-solid", a.icon]} />
+                            <div>
+                                <h3 class="mk-h3">{a.title}</h3>
+                                <p>{a.desc}</p>
+                            </div>
+                        </div>
+                    ))
+                }
+            </div>
         </div>
-        <div id="upload-status" class="text-xs font-semibold text-slate-500"></div>
-      </div>
-      <div class="modal-foot">
-        <button class="btn btn-ghost" data-close="item-modal">取消</button>
-        <button id="item-save" class="btn btn-primary" disabled>保存</button>
-      </div>
-    </div>
-  </div>
+    </section>
 
-  <!-- ===== 素材 编辑 弹窗(改标题 / 换分组) ===== -->
-  <div id="item-edit-modal" class="modal-mask">
-    <div class="modal-box">
-      <div class="modal-head">
-        <span>编辑素材</span>
-        <button class="mini-btn" data-close="item-edit-modal"><i class="fa-solid fa-xmark"></i></button>
-      </div>
-      <div class="modal-body">
-        <div class="field">
-          <label>标题</label>
-          <input id="item-edit-title" type="text" name="item-edit-title" placeholder="素材标题" autocomplete="off" />
+    <!-- ===================== FAQ ===================== -->
+    <section class="mk-section" id="faq" style="background:var(--mk-bg-soft)">
+        <div class="mk-wrap">
+            <div class="mk-section-head mk-reveal">
+                <span class="mk-eyebrow"
+                    ><i class="fa-regular fa-circle-question"></i> 常见问题</span
+                >
+                <h2 class="mk-h2" style="margin-top:16px">
+                    先把最容易被问的说清楚
+                </h2>
+            </div>
+            <div class="mk-faq">
+                {
+                    FAQS.map((f) => (
+                        <details class="mk-reveal">
+                            <summary>
+                                {f.q}
+                                <i class="fa-solid fa-chevron-down" />
+                            </summary>
+                            <div class="mk-faq-body">{f.a}</div>
+                        </details>
+                    ))
+                }
+            </div>
         </div>
-        <div class="field">
-          <label>所属分组</label>
-          <select id="item-edit-menu"></select>
+    </section>
+
+    <!-- ===================== 结尾 CTA ===================== -->
+    <section class="mk-section" style="padding-top:20px">
+        <div class="mk-wrap">
+            <div class="mk-final mk-reveal">
+                <h2 class="mk-h2">
+                    今天把素材<span class="mk-grad-text">安顿好</span>
+                </h2>
+                <p class="mk-lead">
+                    注册只要一分钟,14
+                    天内全功能随便用。觉得不合适,数据导出走就是,不绑人。
+                </p>
+                <div class="mk-hero-cta">
+                    <a class="mk-btn mk-btn-primary mk-btn-lg" href="/register">
+                        <i class="fa-solid fa-rocket"></i>
+                        {signup}素材库
+                    </a>
+                    <a class="mk-btn mk-btn-ghost mk-btn-lg" href="/login">
+                        已有账号,登录
+                    </a>
+                </div>
+            </div>
         </div>
-      </div>
-      <div class="modal-foot">
-        <button class="btn btn-ghost" data-close="item-edit-modal">取消</button>
-        <button id="item-edit-save" class="btn btn-primary">保存</button>
-      </div>
-    </div>
-  </div>
+    </section>
 
-  <!-- ===== 批量移动分组 弹窗(管理员) ===== -->
-  <div id="batch-move-modal" class="modal-mask">
-    <div class="modal-box">
-      <div class="modal-head">
-        <span>移动到分组</span>
-        <button class="mini-btn" data-close="batch-move-modal"><i class="fa-solid fa-xmark"></i></button>
-      </div>
-      <div class="modal-body">
-        <div class="field">
-          <label id="batch-move-tip">目标分组</label>
-          <select id="batch-move-menu"></select>
+    <!-- ===================== 页脚 ===================== -->
+    <footer class="mk-footer">
+        <div class="mk-wrap mk-footer-inner">
+            <a class="mk-logo" href="/">
+                <span class="mk-logo-mark"
+                    ><i class="fa-solid fa-book-open"></i></span
+                >
+                资料素材库
+            </a>
+            <div class="mk-footer-links">
+                <a href="#features">功能</a>
+                <a href="#pricing">价格</a>
+                <a href="#assure">保障</a>
+                <a href="#faq">常见问题</a>
+                <a href="/login">登录</a>
+                <a href="/register">{signup}</a>
+            </div>
+            <div class="mk-footer-copy">
+                © {new Date().getFullYear()} 资料素材库 · media.zzydhj.com · 让团队素材找得到、取得出、管得住
+            </div>
         </div>
-      </div>
-      <div class="modal-foot">
-        <button class="btn btn-ghost" data-close="batch-move-modal">取消</button>
-        <button id="batch-move-confirm" class="btn btn-primary">移动</button>
-      </div>
-    </div>
-  </div>
+    </footer>
 
-  <!-- ===== 会员到期锁屏:全屏遮罩盖住整站(仅留退出登录);右键/拖拽/保存快捷键全禁并弹续费弹窗 ===== -->
-  <div id="lock-screen" class="lock-screen hidden">
-    <i class="fa-solid fa-crown lock-icon"></i>
-    <div class="lock-title">会员到期</div>
-    <div class="lock-text">续费后使用</div>
-    <div class="lock-sub">素材浏览与所有功能已停用,请联系管理员续费</div>
-    <button id="lock-logout" class="btn btn-ghost lock-logout" type="button">退出登录</button>
-  </div>
+    <script>
+        // 截图缺失降级:图片加载失败时给外层容器加 *-missing 类,由 CSS 换成线框占位
+        document
+            .querySelectorAll<HTMLImageElement>("img[data-shot]")
+            .forEach((img) => {
+                const mark = () => {
+                    const host = img.closest(".mk-shot, .mk-figure");
+                    if (!host) return;
+                    host.classList.add(
+                        host.classList.contains("mk-shot")
+                            ? "mk-shot-missing"
+                            : "mk-figure-missing",
+                    );
+                };
+                // 命中缓存的失败响应不会再报错,用 complete + naturalWidth 补判一次
+                if (img.complete && img.naturalWidth === 0) mark();
+                else img.addEventListener("error", mark, { once: true });
+            });
 
-  <!-- ===== 会员到期续费提示大弹窗(到期公司账号点任何功能时弹) ===== -->
-  <div id="expiry-modal" class="modal-mask">
-    <div class="modal-box expiry-modal-box">
-      <i class="fa-solid fa-crown expiry-modal-icon"></i>
-      <div class="expiry-modal-title">会员到期</div>
-      <div class="expiry-modal-text">续费后使用</div>
-      <button class="btn btn-primary expiry-modal-btn" data-close="expiry-modal">我知道了</button>
-    </div>
-  </div>
+        // 入场动效:元素进视口再淡入上移;一次性观察后取消,避免长期占用
+        const io = new IntersectionObserver(
+            (entries) => {
+                for (const e of entries) {
+                    if (!e.isIntersecting) continue;
+                    e.target.classList.add("mk-in");
+                    io.unobserve(e.target);
+                }
+            },
+            { rootMargin: "0px 0px -8% 0px", threshold: 0.08 },
+        );
+        document.querySelectorAll(".mk-reveal").forEach((el) => io.observe(el));
 
-  <!-- ===== 新设备首登预热:全屏进度窗,后台把列表+缩略图灌进缓存,刷完秒开;可跳过转后台静默 ===== -->
-  <div id="warmup-overlay" class="warmup-overlay hidden">
-    <div class="warmup-box">
-      <i class="fa-solid fa-bolt warmup-icon"></i>
-      <div class="warmup-title">首次新设备登录,努力加载中</div>
-      <div class="warmup-track"><div id="warmup-bar" class="warmup-bar"></div></div>
-      <div class="warmup-meta">
-        <span id="warmup-label">正在准备…</span>
-        <span id="warmup-pct">0%</span>
-      </div>
-      <button id="warmup-skip" class="btn btn-ghost warmup-skip" type="button">跳过,先浏览(后台继续加载)</button>
-    </div>
-  </div>
-
-  <!-- ===== 公司管理 弹窗(超级管理员) ===== -->
-  <div id="org-modal" class="modal-mask">
-    <div class="modal-box">
-      <div class="modal-head">
-        <span>公司管理</span>
-        <button class="mini-btn" data-close="org-modal"><i class="fa-solid fa-xmark"></i></button>
-      </div>
-      <div class="modal-body">
-        <div class="field">
-          <label>新增公司</label>
-          <div class="flex gap-2">
-            <input id="new-org-name" type="text" placeholder="公司名称" class="flex-1" />
-            <button id="add-org" class="btn btn-primary">添加</button>
-          </div>
-        </div>
-        <div id="org-list" class="flex flex-col"></div>
-      </div>
-    </div>
-  </div>
-
-  <!-- ===== 存储用量 弹窗(管理员:超管看全部公司,公司管理员看本公司) ===== -->
-  <div id="storage-modal" class="modal-mask">
-    <div class="modal-box">
-      <div class="modal-head">
-        <span>存储用量</span>
-        <button class="mini-btn" data-close="storage-modal"><i class="fa-solid fa-xmark"></i></button>
-      </div>
-      <div class="modal-body">
-        <div id="storage-total" class="storage-total"></div>
-        <div id="storage-list" class="flex flex-col"></div>
-        <p class="storage-note">按各公司素材原文件大小合计(不含缩略图),实时统计。</p>
-      </div>
-    </div>
-  </div>
-
-  <!-- ===== 用户管理 弹窗 ===== -->
-  <div id="user-modal" class="modal-mask">
-    <div class="modal-box">
-      <div class="modal-head">
-        <span>用户管理</span>
-        <button class="mini-btn" data-close="user-modal"><i class="fa-solid fa-xmark"></i></button>
-      </div>
-      <div class="modal-body">
-        <div class="field" id="user-org-field">
-          <label>所属公司</label>
-          <select id="user-org-select"></select>
-        </div>
-        <div class="field">
-          <label>新增用户</label>
-          <input id="new-user-name" type="text" name="new-username" placeholder="用户名" autocomplete="off" />
-          <input id="new-user-pass" type="password" name="new-password" placeholder="密码(至少 6 位)" autocomplete="new-password" />
-          <select id="new-user-role">
-            <option value="user">普通用户(仅下载)</option>
-            <option value="admin">公司管理员(可编辑本公司)</option>
-          </select>
-          <button id="add-user" class="btn btn-primary">添加用户</button>
-        </div>
-        <div id="user-list" class="flex flex-col"></div>
-      </div>
-    </div>
-  </div>
-
-  <!-- 图片/视频放大预览:关灯式全屏,无边缘包裹,支持左右切换 -->
-  <div id="lightbox" class="lightbox">
-    <button class="lb-close" id="lb-close" title="关闭 (Esc)"><i class="fa-solid fa-xmark"></i></button>
-    <button class="lb-nav lb-prev" id="lb-prev" title="上一个 (←)"><i class="fa-solid fa-chevron-left"></i></button>
-    <div class="lb-stage" id="lightbox-body"></div>
-    <button class="lb-nav lb-next" id="lb-next" title="下一个 (→)"><i class="fa-solid fa-chevron-right"></i></button>
-    <div class="lb-caption" id="lightbox-title"></div>
-    <!-- 手机端提示:长按图片出系统菜单(存储图像/分享),进相册的可靠路径 -->
-    <div id="lb-hint" class="lb-hint hidden">长按图片可保存到相册或分享</div>
-  </div>
-
-  <div id="toast" class="toast"></div>
-
-  <script>
-    import '../client/app';
-  </script>
-</Base>
+        // 锚点跳转时给 sticky 导航让位,避免标题被压住
+        document
+            .querySelectorAll<HTMLAnchorElement>(
+                '.mk-nav-links a, .mk-footer-links a[href^="#"]',
+            )
+            .forEach((a) => {
+                a.addEventListener("click", (ev) => {
+                    const id = a.getAttribute("href");
+                    if (!id?.startsWith("#")) return;
+                    const target = document.querySelector(id);
+                    if (!target) return;
+                    ev.preventDefault();
+                    const top =
+                        target.getBoundingClientRect().top +
+                        window.scrollY -
+                        82;
+                    window.scrollTo({ top, behavior: "smooth" });
+                });
+            });
+    </script>
+</Marketing>

@@ -1,0 +1,48 @@
+---
+import "../styles/landing.css";
+
+interface Props {
+    title?: string;
+    description?: string;
+}
+const {
+    title = "资料素材库 · 团队图片/视频/文档素材管理平台",
+    description = "资料素材库(Media Manager):按公司隔离的在线素材库,多级分类、图片/视频/PDF/Word/Excel 全格式预览、批量下载与分享、成员权限与会员到期管理。注册即用,14 天免费试用。",
+} = Astro.props;
+const site = "https://media.zzydhj.com";
+---
+
+<!doctype html>
+<html lang="zh-CN">
+    <head>
+        <meta charset="UTF-8" />
+        <meta
+            name="viewport"
+            content="width=device-width, initial-scale=1.0, viewport-fit=cover"
+        />
+        <meta name="theme-color" content="#060a18" />
+        <title>{title}</title>
+        <meta name="description" content={description} />
+        <link rel="canonical" href={site + Astro.url.pathname} />
+        <!-- 社交分享卡片 -->
+        <meta property="og:type" content="website" />
+        <meta property="og:site_name" content="资料素材库" />
+        <meta property="og:title" content={title} />
+        <meta property="og:description" content={description} />
+        <meta property="og:url" content={site + Astro.url.pathname} />
+        <meta property="og:image" content={site + "/landing/shot-grid.png"} />
+        <meta name="twitter:card" content="summary_large_image" />
+        <!-- favicon 与后台共用一套 -->
+        <link rel="icon" href="/favicon.ico" sizes="16x16 32x32 48x48" />
+        <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+        <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+        <link
+            rel="stylesheet"
+            href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css"
+            referrerpolicy="no-referrer"
+        />
+    </head>
+    <body class="mk-root">
+        <slot />
+    </body>
+</html>
