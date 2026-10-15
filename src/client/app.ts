@@ -313,10 +313,10 @@ async function init() {
     enterLockMode();
     return;
   }
-  // 新设备/无缓存首登:立即挂全屏进度窗并起跑时间进度(不等首屏),
-  // 首屏渲染在弹窗背后照常进行;进度纯时间驱动 20s 到 100% 必收窗,
-  // 真正刷缓存的是 loadContent 末尾启动的后台加载引擎(没刷完转后台静默继续)
-  if (activeOrgId && warmupNeeded(activeOrgId)) startWarmupUi();
+  // 新设备/无缓存首登:挂全屏进度窗解释“第一次在预缓存”。但手机端不弹——
+  // 那是一张盖住整屏的白卡,手机上让用户干等几秒只会直接流失;预热照做,只是不打扰。
+  // 桌面端弹,但首屏一画出真实内容就立即收窗(maybeCloseWarmup),20s 只是兜底上限
+  if (activeOrgId && !isMobileViewport() && warmupNeeded(activeOrgId)) startWarmupUi();
   await loadContent();
 }
 
@@ -761,17 +761,23 @@ function appendWindow(w: { items: ItemDTO[]; total: number; pages: number }) {
 }
 /** 切换序列号:快速连点菜单时只允许最后一次点击的结果落地,过期响应全部丢弃 */
 let refreshSeq = 0;
-/** 一次拿全当前视图:第一页带回 total,剩余页一波并行全发、一起返回。
- *  取代旧"先渲染第一页、再 startPreload 一波波补页":列表要么不渲染、要么一次渲染完整,
- *  消除"先 36 个、过一会儿长出来"的割裂感;温会话(页缓存已铺)甚至零网络立即全量。
- *  超 VIEW_FETCH_MAX 的视图留 HAS_MORE 给无限滚动 */
-async function fetchViewAll(): Promise<{
+/** 一个视图的一批素材 + 服务端聚合计数 */
+interface ViewPayload {
   items: ItemDTO[];
   total: number;
   favorites?: string[];
   favCount?: number;
-}> {
+}
+
+/** 一次拿全当前视图:第一页带回 total,剩余页一波并行全发、一起返回。
+ *  取代旧"先渲染第一页、再 startPreload 一波波补页":列表要么不渲染、要么一次渲染完整,
+ *  消除"先 36 个、过一会儿长出来"的割裂感;温会话(页缓存已铺)甚至零网络立即全量。
+ *  超 VIEW_FETCH_MAX 的视图留 HAS_MORE 给无限滚动。
+ *  onFirstPage:仅冷启动(无任何旧缓存可先画)时传——第一页一到就先渲染真实卡片,
+ *  不等剩下几页,避免移动网络下首屏干挂几秒骨架屏 */
+async function fetchViewAll(onFirstPage?: (p: ViewPayload) => void): Promise<ViewPayload> {
   const first = await fetchPage(1);
+  onFirstPage?.(first);
   const pages = Math.min(Math.ceil(first.total / VIEW_PAGE), Math.ceil(VIEW_FETCH_MAX / VIEW_PAGE));
   let items = first.items;
   let favorites = first.favorites;
@@ -806,8 +812,29 @@ async function refreshList() {
       PAGE = 1;
       renderSkeleton(); // 旧内容一律先换成骨架屏:新数据到达前绝不展示与筛选不符的卡片
     }
-    // 一次拿全视图(全部页并行):渲染时要么骨架屏、要么完整列表,没有中间态
-    const w = await fetchViewAll();
+    // 冷启动(无旧缓存可先画)才传首页回调:先出真实卡片盖掉骨架屏,剩余页到了再整体替换。
+    // 温会话走原路:一次渲染完整,不制造"长出来"的割裂感
+    const w = await fetchViewAll(
+      painted
+        ? undefined
+        : (first) => {
+          if (seq !== refreshSeq) return; // 用户已切走:这份首页作废
+          ITEMS = first.items;
+          TOTAL = first.total;
+          PAGE = 1;
+          // 关键:过渡期保持 HAS_MORE=false。若按"已拿 < total"置 true,
+          // 滚动会触发 loadMore 把第 2 页 append 进来,而 fetchViewAll 随后又用
+          // 完整集合整体赋值 —— 两条路径交叉就会出重复卡片。剩余页马上就到,不值得冒这个险
+          HAS_MORE = false;
+          if (first.favorites) FAVORITES = new Set(first.favorites);
+          if (first.favCount != null) FAV_COUNT = first.favCount;
+          renderGrid();
+          updateGridFooter();
+          updateFavCount();
+          animateGridEnterIfNewView();
+          maybeCloseWarmup(); // 首屏已有真实内容,预热窗再挡着就没道理了
+        },
+    );
     if (seq !== refreshSeq) return; // 用户又切走了:这份结果作废,避免"点A显示B"
     ITEMS = w.items;
     TOTAL = w.total;
@@ -821,6 +848,7 @@ async function refreshList() {
     updateFavCount();
     animateGridEnterIfNewView();
     writeListCache();
+    maybeCloseWarmup(); // 全量渲染完成:预热窗使命结束
     bgPrioritize(); // 后台引擎:把当前视图的预览字节提到队首(点哪先刷哪)
   } finally {
     bgRelease();
@@ -1176,6 +1204,7 @@ async function bgFetch(url: string) {
 const WARMUP_PREFIX = 'mm-warmup-'; // + orgId:done=已刷完 / skip=用户跳过或到点关窗(不再弹大窗)
 const WARMUP_UI_MS = 20_000; // 进度窗固定时长:5%/秒,20 秒到 100%(用户定的上限:不等太久,没加载完的后台继续)
 let warmupUiTimer: number | undefined;
+let warmupStartedAt = 0;
 /** 进度窗文案:引擎报数(进度条本身纯时间驱动,与这里无关);窗已收就不动 DOM */
 function bgReport() {
   if (warmupUiTimer === undefined) return;
@@ -1216,6 +1245,7 @@ function startWarmupUi() {
   if (!overlay) return;
   overlay.classList.remove('hidden');
   const t0 = Date.now();
+  warmupStartedAt = t0;
   window.clearInterval(warmupUiTimer);
   warmupUiTimer = window.setInterval(() => {
     const p = Math.min(100, Math.round(((Date.now() - t0) / WARMUP_UI_MS) * 100));
@@ -1241,6 +1271,23 @@ function closeWarmupUi() {
     }
   }
 }
+
+/** 预热窗最短展示时长:首屏回得太快时让窗“一闪而过”反而更像出了 bug,留一个极短的过场 */
+const WARMUP_MIN_MS = 700;
+
+/**
+ * 首屏已画出真实内容 → 预热窗立即收。
+ * 之前的窗是纯时间驱动跑满 20 秒才关,与实际加载快慢无关:
+ * 哪怕 1 秒就渲染完,用户也要对着一张盖住整屏的白卡干等 20 秒,
+ * 首次访问的人只会认为“加载不出来”然后关掉。
+ * 20 秒上限仍保留作兜底:万一一直渲染不出来,也不能永久挡着。
+ */
+function maybeCloseWarmup() {
+  if (warmupUiTimer === undefined) return;
+  if (Date.now() - warmupStartedAt < WARMUP_MIN_MS) return;
+  closeWarmupUi();
+}
+
 /** 无缓存切换时立即铺骨架屏:视觉"瞬间有响应",避免空白等待感 */
 function renderSkeleton() {
   const grid = $('#card-grid');
