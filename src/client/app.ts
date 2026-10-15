@@ -83,6 +83,7 @@ let pendingUpload: {
   filename: string;
   thumbKey: string | null;
   thumbUrl: string | null;
+  thumbSize: number | null; // 缩略图字节:随创建/回写一并入库,存储计费要用
   duration: number | null;
 } | null = null;
 
@@ -1711,6 +1712,7 @@ function renderGrid() {
     kind: it.type as PreviewItem['kind'],
     id: it.id,
     duration: it.duration,
+    size: it.size,
   }));
   const pindexOf = new Map<string, number>();
   previewable.forEach((it, i) => pindexOf.set(it.id, i));
@@ -2619,6 +2621,42 @@ interface PreviewItem {
   kind: 'image' | 'video' | 'pdf' | 'word' | 'excel';
   id?: string; // 灯箱惰性回填时长用
   duration?: number | null;
+  size?: number | null; // 文件体积:大文件预览前的预期告知用
+}
+
+/** PDF 预览的体积阈值(字节):
+ *  ≥ PDF_HINT_MIN 加载提示里报出体积与已用时长;
+ *  ≥ PDF_GATE_MIN 先弹决策卡让用户选(在线预览要整份接收,不如先问一句)。
+ *  刻意不做“真·字节进度条”:那必须自己 fetch 整份再喂 blob URL,
+ *  150MB 级文件在手机上可能直接撑爆页签 —— 代价大于收益。 */
+const PDF_HINT_MIN = 8 * 1024 * 1024;
+const PDF_GATE_MIN = 25 * 1024 * 1024;
+
+/** 已经用户确认过“继续在线预览”的文件(会话内有记忆,来回翻页不重复询问) */
+const pdfGatePassed = new Set<string>();
+
+/** 按 2~10 MB/s 的保守带宽区间给一个预估耗时范围(只用于事前告知,不是承诺) */
+function pdfEtaRange(bytes: number): string {
+  const mb = bytes / 1024 / 1024;
+  const fmt = (s: number) => (s >= 60 ? `${Math.max(1, Math.round(s / 60))} 分钟` : `${s} 秒`);
+  const lo = Math.max(3, Math.round(mb / 10));
+  const hi = Math.max(lo + 2, Math.round(mb / 2));
+  return `${fmt(lo)} ~ ${fmt(hi)}`;
+}
+
+/** 大文件预览前的决策卡:先给体积与预期,再给“在线预览 / 先下载”两个出口 */
+function pdfGateHtml(item: PreviewItem): string {
+  const size = fmtBytes(item.size ?? 0);
+  return `<div class="lb-doc-gate">
+    <i class="fa-regular fa-file-pdf"></i>
+    <h3>这份文件比较大（${size}）</h3>
+    <p>在线预览需要把整份文件传到浏览器才能显示，网络一般时大约要 ${pdfEtaRange(item.size ?? 0)}。</p>
+    <div class="lb-doc-gate-acts">
+      <button class="lb-gate-primary" data-act="lb-pdf-go"><i class="fa-regular fa-eye"></i> 继续在线预览</button>
+      <button class="lb-gate-ghost" data-act="lb-download" data-url="${item.src}"><i class="fa-solid fa-download"></i> 先下载，用本地阅读器打开</button>
+    </div>
+    <p class="lb-doc-gate-note">预览过一次后本机会有缓存，再看基本秒开。</p>
+  </div>`;
 }
 let PREVIEW_LIST: PreviewItem[] = [];
 let previewIndex = 0;
@@ -2637,6 +2675,10 @@ function renderPreview() {
     // Office 文档:先放加载占位,异步解析后填充(客户端 SheetJS / mammoth)
     body.innerHTML = `<div class="lb-office"><div class="lb-office-loading"><i class="fa-solid fa-spinner fa-spin"></i> 正在加载预览…</div></div>`;
     loadOfficePreview(item, previewIndex);
+  } else if (item.kind === 'pdf' && (item.size ?? 0) >= PDF_GATE_MIN && !pdfGatePassed.has(item.src)) {
+    // 大文件先给预期:点了就转圈 = 慢是我们的锅;先告诉他多大、要等多久、可以下载
+    // = 等待变成他自己做的决定。这是“慢得合理”的关键,而不是多一个进度条
+    body.innerHTML = pdfGateHtml(item);
   } else {
     body.innerHTML =
       item.kind === 'video'
@@ -2746,6 +2788,32 @@ function bindPreviewLoading(body: HTMLElement, item: PreviewItem) {
     const f = body.querySelector('iframe');
     if (!f) return;
     f.addEventListener('load', hide, { once: true });
+    // 大 PDF:浏览器内置阅读器自行下载,JS 拿不到字节数,所以只报「体积 + 已用时长」这类事实,
+    // 不编假百分比。等得够久了才递出下载出口,一上来就给两个选择反而像在劝退
+    if (item.size && item.size >= PDF_HINT_MIN) {
+      const size = fmtBytes(item.size);
+      const t0 = Date.now();
+      text.textContent = `正在接收 ${size} 文件…`;
+      const timer = window.setInterval(() => {
+        if (!overlay.isConnected || overlay.classList.contains('lb-loading-done')) {
+          window.clearInterval(timer);
+          return;
+        }
+        const s = Math.round((Date.now() - t0) / 1000);
+        text.textContent =
+          s >= 20
+            ? `正在接收 ${size} 文件 · 已用 ${s} 秒 · 也可以先下载再看`
+            : `正在接收 ${size} 文件 · 已用 ${s} 秒`;
+        if (s >= 20 && !overlay.querySelector('.lb-retry-btn')) {
+          const btn = document.createElement('button');
+          btn.className = 'lb-retry-btn';
+          btn.dataset.act = 'lb-download';
+          btn.dataset.url = item.src;
+          btn.innerHTML = '<i class="fa-solid fa-download"></i> 下载后查看';
+          overlay.appendChild(btn);
+        }
+      }, 1000);
+    }
   }
 }
 
@@ -2876,7 +2944,15 @@ function initLightbox() {
       renderPreview();
       return;
     }
-    if (target.closest('img, video, iframe, button, .lb-office')) return;
+    // 大文件决策卡上的「继续在线预览」:记入已确认集合后重建,本轮就会真加 iframe
+    if (target.closest('[data-act="lb-pdf-go"]')) {
+      e.stopPropagation();
+      const cur = PREVIEW_LIST[previewIndex];
+      if (cur) pdfGatePassed.add(cur.src);
+      renderPreview();
+      return;
+    }
+    if (target.closest('img, video, iframe, button, .lb-office, .lb-doc-gate')) return;
     closeLightbox();
   });
   // 键盘:← → 切换,Esc 关闭
@@ -3692,6 +3768,7 @@ async function backfillOneThumb(it: ItemDTO, replace = false): Promise<'ok' | 's
       body: JSON.stringify({
         thumbKey: thumb.key,
         thumbUrl: thumb.url,
+        thumbSize: thumb.size, // 重建后体积变了,计费必须跟着走
         ...(replace ? { replaceThumb: true } : {}),
       }),
     });
@@ -3823,6 +3900,7 @@ async function handleFileChosen(file: File) {
     const type = main.type as ItemType; // 服务端权威判定:image/video/pdf/word/excel
     let thumbKey: string | null = null;
     let thumbUrl: string | null = null;
+    let thumbSize: number | null = null;
     let duration: number | null = null;
     if (type === 'video') {
       duration = await probeVideoDuration(work);
@@ -3835,6 +3913,7 @@ async function handleFileChosen(file: File) {
         });
         thumbKey = thumb.key;
         thumbUrl = thumb.url;
+        thumbSize = thumb.size;
       }
     } else if (type === 'image') {
       status.textContent = '生成图片缩略图…';
@@ -3846,6 +3925,7 @@ async function handleFileChosen(file: File) {
         });
         thumbKey = thumb.key;
         thumbUrl = thumb.url;
+        thumbSize = thumb.size;
       }
     } else if (type === 'pdf') {
       status.textContent = '生成 PDF 预览图…';
@@ -3857,6 +3937,7 @@ async function handleFileChosen(file: File) {
         });
         thumbKey = thumb.key;
         thumbUrl = thumb.url;
+        thumbSize = thumb.size;
       }
     }
     if (seq !== itemModalSeq) return; // 用户中途关弹窗又重开(=放弃):不把这份上传残留进新弹窗
@@ -3869,6 +3950,7 @@ async function handleFileChosen(file: File) {
       filename: main.filename,
       thumbKey,
       thumbUrl,
+      thumbSize,
       duration,
     };
     // 预览区:图片/视频直接展示,PDF 内嵌,Word/Excel 显示类型图标
@@ -3910,6 +3992,7 @@ async function saveItem() {
         fileUrl: pendingUpload.fileUrl,
         thumbKey: pendingUpload.thumbKey,
         thumbUrl: pendingUpload.thumbUrl,
+        thumbSize: pendingUpload.thumbSize,
         mime: pendingUpload.mime,
         size: pendingUpload.size,
         filename: pendingUpload.filename,
@@ -4092,6 +4175,7 @@ async function batchUploadTask(files: File[], targetMenuId: string, queued: bool
       const type = main.type as ItemType; // 服务端权威判定
       let thumbKey: string | null = null;
       let thumbUrl: string | null = null;
+      let thumbSize: number | null = null;
       const duration = type === 'video' ? await probeVideoDuration(work) : null;
       if (type === 'video' || type === 'image' || type === 'pdf') {
         const blob =
@@ -4104,6 +4188,7 @@ async function batchUploadTask(files: File[], targetMenuId: string, queued: bool
           const t = await uploadFile(new File([blob], 'thumb.jpg', { type: 'image/jpeg' }), 'thumb');
           thumbKey = t.key;
           thumbUrl = t.url;
+          thumbSize = t.size;
         }
       }
       await api('/api/items', {
@@ -4117,6 +4202,7 @@ async function batchUploadTask(files: File[], targetMenuId: string, queued: bool
           fileUrl: main.url,
           thumbKey,
           thumbUrl,
+          thumbSize,
           mime: main.mime,
           size: main.size,
           filename: main.filename,
