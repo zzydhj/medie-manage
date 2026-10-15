@@ -276,6 +276,16 @@
     color: var(--mk-ink-dim);
 }
 
+.mk-hero-note a {
+    color: #cbd5e1;
+    text-decoration: underline;
+    text-underline-offset: 3px;
+}
+
+.mk-hero-note a:hover {
+    color: #fff;
+}
+
 .mk-stats {
     display: flex;
     flex-wrap: wrap;

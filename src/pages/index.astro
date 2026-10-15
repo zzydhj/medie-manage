@@ -12,8 +12,8 @@ const heroCta = SITE.openRegistration ? "立即免费开通" : "申请开通体�
 const heroNote = SITE.openRegistration
     ? "无需信用卡 · 提交即建好属于你公司的独立素材库"
     : SITE.contact
-        ? `人工开户 · 致电 ${SITE.contact} 当天开通,含 ${SITE.trialDays} 天全功能试用`
-        : `人工开户 · 联系管理员当天开通,含 ${SITE.trialDays} 天全功能试用`;
+      ? `人工开户 · 致电 ${SITE.contact} 当天开通,含 ${SITE.trialDays} 天全功能试用`
+      : `人工开户 · 联系管理员当天开通,含 ${SITE.trialDays} 天全功能试用`;
 const signupStep = SITE.openRegistration
     ? {
           title: "注册开通",
@@ -35,7 +35,7 @@ const PLANS = [
         price: "0",
         unit: "/ 14 天",
         desc: "先把全流程跑通,再决定要不要付费",
-        bill: "到期后可升级保留全部数据",
+        bill: "14 天后可按实际用量继续,数据完整保留",
         features: [
             "1 家公司独立素材库",
             "3 个成员账号",
@@ -77,7 +77,7 @@ const PLANS = [
             "标准版全部能力",
             "成员账号数不限",
             "1 TB 存储空间",
-            "多公司统一后台托管",
+            "多个团队分开管理",
             "协助从网盘/服务器迁移存量素材",
             "7×12 专属对接",
         ],
@@ -87,12 +87,12 @@ const PLANS = [
     },
 ];
 
-/** 核心能力 */
+/** 核心能力 —— 只讲客户能得到什么,不讲平台内部的租户/权限/到期机制 */
 const FEATURES = [
     {
-        icon: "fa-building-shield",
-        title: "按公司彻底隔离",
-        desc: "每家公司的菜单、素材、成员各自独立。文件以公司前缀存放,跨公司的访问在服务端直接判死,不是靠前端藏起来。",
+        icon: "fa-user-shield",
+        title: "只有你团队的人看得到",
+        desc: "素材需要账号才能访问，不对外公开、不会被搜索引擎收录。你传的东西只给自己人用。",
     },
     {
         icon: "fa-sitemap",
@@ -115,14 +115,14 @@ const FEATURES = [
         desc: "勾选多份素材,逐个下载或在浏览器里打成一个 ZIP;手机端可一次调起系统分享,微信、QQ 直接发出去。",
     },
     {
-        icon: "fa-user-gear",
-        title: "三级成员权限",
-        desc: "超级管理员 / 公司管理员 / 普通成员。管理员负责上传与整理分类,成员只负责取用,职责清清楚楚。",
+        icon: "fa-users",
+        title: "员工账号管理",
+        desc: "给同事分开账号:谁负责上传与整理分类、谁只需要取用,各司其职。离职了收回一个账号就行,素材不会跟着飞。",
     },
     {
-        icon: "fa-calendar-check",
-        title: "会员到期可控",
-        desc: "按公司设置到期日,到期后停止一切数据下发(连文件字节都拿不到),续费立即恢复——商用闭环自带。",
+        icon: "fa-star",
+        title: "常用素材一键收藏",
+        desc: "高频取用的那几十份单独收起来,还能自己拖拽排序。不用每次从一堆目录里翻。",
     },
     {
         icon: "fa-mobile-screen",
@@ -178,32 +178,32 @@ const STEPS = [
     },
 ];
 
-/** 保障 */
+/** 保障 —— 同样只讲客户关心的事,不暴露内部实现 */
 const ASSURANCE = [
     {
         icon: "fa-lock",
-        title: "数据只属于你",
-        desc: '公司之间命名空间完全隔离,平台内不存在"别人能翻到你家素材"的路径。',
+        title: "素材不公开、不被收录",
+        desc: "所有文件必须登录后才能访问,不对外展示、不做二次分发,也不会被搜索引擎抓走。",
     },
     {
         icon: "fa-server",
-        title: "文件不落第三方",
-        desc: "素材存放在 Cloudflare R2 对象存储,不做任何转售、公开展示或二次分发。",
+        title: "存在正规云存储上",
+        desc: "素材存在 Cloudflare 的对象存储里,多地冗余,不是某台随时会挂的自建机器。",
     },
     {
         icon: "fa-shield-halved",
-        title: "传输与凭证加固",
-        desc: "全站 HTTPS,会话令牌 HMAC-SHA256 签名并存于 HttpOnly Cookie,脚本读不到。",
+        title: "全站加密传输",
+        desc: "全程 HTTPS 访问,登录凭证存在浏览器安全位,不会被其他脚本读到。",
     },
     {
         icon: "fa-fingerprint",
-        title: "密码不可逆存储",
-        desc: "PBKDF2-SHA256 加盐十万轮迭代,数据库里只有盐与哈希,没有明文。",
+        title: "密码存不了明文",
+        desc: "密码经过多轮不可逆处理后才入库,连我们自己都看不到你的原始密码。",
     },
     {
-        icon: "fa-rotate",
-        title: "到期不丢数据",
-        desc: "到期只是停止读写,分类结构与历史素材完整保留,续费后立刻原样恢复。",
+        icon: "fa-file-export",
+        title: "随时能带走,不锁格式",
+        desc: "存的就是你原本的文件,不转码、不加水印、不改格式。想走的时候批量下载就能全部带走。",
     },
     {
         icon: "fa-headset",
@@ -216,7 +216,7 @@ const ASSURANCE = [
 const FAQS = [
     {
         q: "它和网盘有什么区别?",
-        a: '网盘是"个人文件仓库",这里是"团队素材货架"。区别在于:面向业务的分类目录、卡片式预览、按公司隔离的租户边界、成员权限分级,以及会员到期控制。你要的不是存,是让同事在三十秒内找到能用的那张图。',
+        a: '网盘是"个人文件仓库",这里是"团队素材货架"。区别在于:面向业务的分类目录、卡片式预览、不用下载就能看图看视频、批量下载与分享、以及给同事开账号分工。你要的不是存,是让同事在三十秒内找到能用的那张图。',
     },
     {
         q: "支持哪些文件格式?",
@@ -231,8 +231,8 @@ const FAQS = [
         a: "可以。套餐内的存储额度可以按公司规模单独调整,详谈即可,不必为了多出来的几十 GB 直接跳档。",
     },
     {
-        q: "试用到期后,已经上传的素材会被删掉吗?",
-        a: "不会。到期后系统停止一切数据的读写与下发,但分类结构、素材文件、成员账号都完整保留;续费后立即恢复原样。只有长期不续且双方确认不再使用时,才会协商数据导出与清理。",
+        q: "不想用了,已经上传的素材怎么办?",
+        a: "随时可以批量下载带走——存的就是你的原始文件,不转码也不改格式。停止使用后你的分类结构、素材与成员账号会完整保留一段时间,期间回来接着用无需重传。",
     },
     {
         q: "能从现有网盘 / 服务器把素材搬过来吗?",
@@ -247,7 +247,7 @@ const FAQS = [
 const STATS = [
     { v: "5 类", k: "素材格式" },
     { v: "4 级", k: "分类目录" },
-    { v: "3 级", k: "成员权限" },
+    { v: "0 安装", k: "打开浏览器就能用" },
     { v: "100MB", k: "单文件上限" },
     { v: "14 天", k: "免费试用" },
 ];
@@ -279,13 +279,13 @@ const STATS = [
                     ) : (
                         <>
                             <a
-                                class="mk-btn mk-btn-ghost mk-btn-sm"
+                                class="mk-btn mk-btn-primary mk-btn-sm"
                                 href="/login"
                             >
                                 登录
                             </a>
                             <a
-                                class="mk-btn mk-btn-primary mk-btn-sm"
+                                class="mk-btn mk-btn-ghost mk-btn-sm"
                                 href="/register"
                             >
                                 {signup}
@@ -310,21 +310,25 @@ const STATS = [
                 放进一个<span class="mk-grad-text">找得到</span>的地方
             </h1>
             <p class="mk-lead">
-                资料素材库是为中小团队做的在线素材管理平台:按公司隔离、多级分类、
-                图片 / 视频 / PDF / Word / Excel 全格式预览、批量下载与分享。
+                资料素材库是给团队用的在线素材管理平台：多级分类、 图片 / 视频 /
+                PDF / Word / Excel
+                全格式预览、批量下载与分享、给同事开账号分工。
                 不用装任何软件,打开浏览器就能用。
             </p>
             <div class="mk-hero-cta">
-                <a class="mk-btn mk-btn-primary mk-btn-lg" href="/register">
+                <a class="mk-btn mk-btn-primary mk-btn-lg" href="/login">
+                    <i class="fa-solid fa-right-to-bracket"></i>
+                    已有账号，直接登录
+                </a>
+                <a class="mk-btn mk-btn-ghost mk-btn-lg" href="/register">
                     <i class="fa-solid fa-rocket"></i>
                     {heroCta}
-                </a>
-                <a class="mk-btn mk-btn-ghost mk-btn-lg" href="#pricing">
-                    <i class="fa-solid fa-tags"></i> 查看价格
                 </a>
             </div>
             <p class="mk-hero-note">
                 {heroNote}
+                {" · "}
+                <a href="#pricing">查看价格</a>
             </p>
 
             <div class="mk-stats">
@@ -586,16 +590,16 @@ const STATS = [
                     今天把素材<span class="mk-grad-text">安顿好</span>
                 </h2>
                 <p class="mk-lead">
-                    注册只要一分钟,14
+                    开通很快,14
                     天内全功能随便用。觉得不合适,数据导出走就是,不绑人。
                 </p>
                 <div class="mk-hero-cta">
-                    <a class="mk-btn mk-btn-primary mk-btn-lg" href="/register">
-                        <i class="fa-solid fa-rocket"></i>
-                        {signup}素材库
+                    <a class="mk-btn mk-btn-primary mk-btn-lg" href="/login">
+                        <i class="fa-solid fa-right-to-bracket"></i>
+                        已有账号，直接登录
                     </a>
-                    <a class="mk-btn mk-btn-ghost mk-btn-lg" href="/login">
-                        已有账号,登录
+                    <a class="mk-btn mk-btn-ghost mk-btn-lg" href="/register">
+                        {signup}素材库
                     </a>
                 </div>
             </div>
