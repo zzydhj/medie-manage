@@ -2,12 +2,47 @@ import type { APIRoute } from 'astro';
 import { deleteItem, getItem, getMenu, updateItem } from '../../../lib/db';
 import { err, getEnv, isResponse, json, requireAdminOrg, requireOrg } from '../../../lib/api';
 
-// 更新卡片:改标题 / 移动到其它菜单 / 回写缩略图(补生成) / 回写时长(灯箱惰性回填)
+// 更新卡片:改标题 / 移动到其它菜单 / 回写缩略图(补生成或重建) / 回写时长(灯箱惰性回填)
+
+/**
+ * 删除被替换掉的旧缩略图对象。四道闸,任一不过就不删(宁留孤儿,不可误删):
+ *  1) 确有旧 key;2) 新旧不同;3) 旧 key 不是本条素材的原图——脚本灌入的数据里
+ *     thumb_key 可能等于 file_key,删了就等于删原文件;4) 全库再查一遍,没有任何
+ *     行的 file_key / thumb_key 仍指向它(多行共用同一缩略图时不能删)。
+ *  调用时机必须在 DB 更新之后:这样任何一步失败只会留下未被引用的孤儿对象,不会让卡片丢图。
+ */
+async function cleanupReplacedThumb(
+  env: Env,
+  oldKey: string | null,
+  newKey: string,
+  fileKey: string,
+): Promise<void> {
+  if (!oldKey || oldKey === newKey || oldKey === fileKey) return;
+  const still = await env.DB
+    .prepare('SELECT 1 AS x FROM items WHERE file_key = ? OR thumb_key = ? LIMIT 1')
+    .bind(oldKey, oldKey)
+    .first();
+  if (still) return; // 仍被引用:不删
+  try {
+    await env.R2.delete(oldKey);
+  } catch {
+    // 删失败留孤儿:不影响任何显示正确性,可另做孤儿清理
+  }
+}
+
 export const PATCH: APIRoute = async (context) => {
   const env = getEnv(context.locals);
   const id = context.params.id as string;
 
-  let body: { title?: string; menuId?: string; thumbKey?: string; thumbUrl?: string; duration?: number };
+  let body: {
+    title?: string;
+    menuId?: string;
+    thumbKey?: string;
+    thumbUrl?: string;
+    duration?: number;
+    /** 显式声明「这是替换缩略图」:成功后顺带清理旧对象。不传则只换指向、不动旧文件 */
+    replaceThumb?: boolean;
+  };
   try {
     body = await context.request.json();
   } catch {
@@ -55,6 +90,11 @@ export const PATCH: APIRoute = async (context) => {
   }
 
   await updateItem(env.DB, id, orgId, patch);
+
+  // 先写新、后删旧:DB 已经指向新缩略图,这里只会多删一个已无人引用的对象
+  if (patch.thumb_key && body.replaceThumb === true) {
+    await cleanupReplacedThumb(env, item.thumb_key, patch.thumb_key, item.file_key);
+  }
   return json({ ok: true });
 };
 

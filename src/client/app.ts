@@ -334,7 +334,10 @@ function bindHeader() {
   });
   $('#btn-companies')?.addEventListener('click', openOrgModal);
   $('#btn-users')?.addEventListener('click', openUserModal);
-  $('#btn-backfill')?.addEventListener('click', backfillThumbs);
+  // 缩略图维护:弹窗里选「只补缺失 / 全部重建」,两个动作同属一个入口,绑在一处
+  $('#btn-backfill')?.addEventListener('click', openThumbModal);
+  $('#thumb-fill')?.addEventListener('click', () => void runThumbMaintenance('fill'));
+  $('#thumb-rebuild')?.addEventListener('click', () => void runThumbMaintenance('rebuild'));
   $('#btn-storage')?.addEventListener('click', openStorageModal);
   $('#btn-batch')?.addEventListener('click', () => setSelectMode(!selectMode));
 
@@ -488,7 +491,7 @@ function initMobileNav() {
   });
   $('#account-backfill')?.addEventListener('click', () => {
     openAccountSheet(false);
-    backfillThumbs();
+    openThumbModal(); // 与桌面端同一入口:进弹窗选「只补缺失 / 全部重建」,不在抽屉里直接开跑
   });
   $('#account-storage')?.addEventListener('click', () => {
     openAccountSheet(false);
@@ -958,17 +961,21 @@ async function bgWaitDrained(org: string) {
  *  用户一有动作立即暂停。返回本轮是否补成功(成功则重规划重铺缓存) */
 async function bgBackfill(org: string): Promise<boolean> {
   let fixed = 0;
+  let visibleFixed = false; // 本轮补图是否命中当前可见窗口:命中则重渲染,让用户立刻看到新缩略图
   for (let i = 0; i < BG_BACKFILL_PER_ROUND && bgNoThumb.length; i++) {
     await bgWaitUser();
-    if (org !== activeOrgId) return fixed > 0;
+    if (org !== activeOrgId) break;
     const it = bgNoThumb.shift()!;
     if (it.thumb_url) continue; // 上一轮已补过(手动/引擎):跳过
     const r = await backfillOneThumb(it);
     if (r === 'ok') {
       fixed++;
       patchThumbUrl(it.id, it.thumb_url!);
+      if (ITEMS.some((x) => x.id === it.id)) visibleFixed = true;
     }
   }
+  // 换公司时不渲染:新公司网格尚未由前台加载,重渲染会画空;引擎随即会为新公司重起一轮
+  if (org === activeOrgId && visibleFixed) renderGrid();
   return fixed > 0;
 }
 /** 补图成功后把新 thumb_url 写进前台窗口与内存页缓存(同对象引用共享修正);
@@ -1017,9 +1024,15 @@ async function bgPlan(org: string) {
     favFirst = null;
   }
   if (org !== activeOrgId) return;
-  // R5:顺筛缺缩略图的老素材进空闲补图队列(每轮以最新清单为准,不跨轮累积)
+  // R5:顺筛缺缩略图的老素材进空闲补图队列(每轮以最新清单为准,不跨轮累积);
+  // 当前视图的排最前:用户一进系统看的那个分组最先补齐并展示,其余分组后台慢慢补
+  const noThumbScope = bgScope();
+  const inCurrentView = (i: ItemDTO): boolean =>
+    !noThumbScope ||
+    (noThumbScope === 'fav' ? FAVORITES.has(i.id) : bgChainOf(i.menu_id).includes(noThumbScope));
   bgNoThumb = all
     .filter((i) => (i.type === 'image' || i.type === 'pdf') && !i.thumb_url)
+    .sort((a, b) => Number(inCurrentView(b)) - Number(inCurrentView(a)))
     .slice(0, BG_BACKFILL_PER_ROUND * 20);
   bgRebuildTree();
   bgSeedLists(org, all, favs, favFirst);
@@ -1106,10 +1119,14 @@ function bgSeedBytes(all: ItemDTO[], favSet: Set<string>) {
     fast.push(url);
   }
   bgViews = views;
-  bgFast = fast;
+  // 手机端只预取当前视图的缩略图:整库在手机上后台铺一遍既烧流量与电量,
+  // 又会把刚看过的缩略图挤出 HTTP 缓存(滚回来又白)。列表元数据预热(R1)不受影响,
+  // 切分组仍秒开;未预取到的图由卡片 <img> 按需拉,不牺牲正确性。
+  const scope = bgScope();
+  bgFast = isMobileViewport() ? fast.filter((u) => views.get(u)?.includes(scope)) : fast;
   bgFastAt = 0;
   bgDone = 0;
-  bgTotal = fast.length;
+  bgTotal = bgFast.length;
   bgPrioritize();
   bgReport();
 }
@@ -1167,9 +1184,12 @@ function bgReport() {
     ? `正在缓存素材预览 ${Math.min(bgDone, bgTotal)} / ${bgTotal}`
     : '正在整理素材清单…';
 }
-/** 全站缩略图刷完:落 done 标记(下次不再弹进度窗) */
+/** 全站刷完一轮:落 done 标记(下次不再弹进度窗)。
+ *  不看 bgTotal:能走到这里说明 bgPlan 已成功(bgPlan 报错会被 bgStart 的 catch 接住,
+ *  不会走到本行);bgTotal=0 只是「本轮确实没东西要预取」(如手机端当前视图无缩略图),
+ *  不该因此下次再弹一次 20 秒窗。 */
 function bgFinish() {
-  if (!activeOrgId || !bgTotal) return;
+  if (!activeOrgId) return;
   try {
     localStorage.setItem(`${WARMUP_PREFIX}${activeOrgId}`, 'done');
   } catch {
@@ -1650,6 +1670,19 @@ async function confirmMenuMove() {
 }
 
 // ---------------- 渲染卡片区 ----------------
+
+/** 无缩略图时,原图不超过此体积才直接当卡片图用(老素材里本来就小的图直接用)。
+ *  超过则卡片走"无预览"占位:绝不能把几 MB 原图当缩略图拉下来——
+ *  这是手机上大分组又慢又费流量的头号原因(一个分组几百张,每张几 MB) */
+const CARD_INLINE_MAX = 200 * 1024;
+
+/** 卡片预览图取哪张:一律优先缩略图;图片在无缩略图且原图够小时回退原图。
+ *  视频/PDF 无缩略图就是没预览,交给桌面端引擎 R5 或管理员「补缩略图」回补 */
+function cardPreviewSrc(it: ItemDTO): string {
+  if (it.thumb_url) return it.thumb_url;
+  return it.type === 'image' && (it.size ?? 0) <= CARD_INLINE_MAX ? it.file_url : '';
+}
+
 function renderGrid() {
   const grid = $('#card-grid');
   if (!grid) return;
@@ -1698,14 +1731,7 @@ function renderGrid() {
     .map((it) => {
       const meta = TYPE_META[it.type];
       const isMedia = it.type === 'image' || it.type === 'video';
-      const previewSrc =
-        it.type === 'video'
-          ? it.thumb_url || ''
-          : it.type === 'image'
-            ? it.thumb_url || it.file_url // 卡片挂缩略图;老素材没缩略图时回退原图
-            : it.type === 'pdf'
-              ? it.thumb_url || '' // PDF 首页预览图(上传时生成/补图通道回补)
-              : '';
+      const previewSrc = cardPreviewSrc(it);
       const pindex = pindexOf.get(it.id);
       const faved = FAVORITES.has(it.id);
       const showCopy = !mobile && it.type === 'image';
@@ -1733,8 +1759,9 @@ function renderGrid() {
           : '');
       const thumbInner = previewSrc
         ? `<img src="${previewSrc}"${
-        // 图片预览链:缩略图→(缩略图坏)原图→(再坏)占位;onerror 链由 __mmImgErr 驱动
-        it.type === 'image' && it.thumb_url ? ` data-fb="${escapeHtml(it.file_url)}"` : ''
+        // 图片预览链:缩略图→(缩略图坏)原图→(再坏)占位;onerror 链由 __mmImgErr 驱动。
+        // 手机端不做原图兜底:救一张坏缩略图不值得拉下几 MB,宁可显示占位等补图
+        it.type === 'image' && it.thumb_url && !mobile ? ` data-fb="${escapeHtml(it.file_url)}"` : ''
         } onerror="window.__mmImgErr && window.__mmImgErr(this)" loading="lazy" decoding="async" />`
         : isMedia
           ? `<div class="text-slate-300 text-xs">无预览</div>`
@@ -3357,6 +3384,11 @@ function probeVideoDecodable(file: File, timeoutMs = 10000): Promise<boolean> {
   });
 }
 
+/** 卡片缩略图长边上限(px):图片与视频共用一档。
+ *  桌面 10 列(≈115 CSS px)与手机 3 列(≈120 CSS px × DPR 3 = 360)绰绰有余,
+ *  桌面 4 列(≈288 CSS px × DPR 2 = 576)接近覆盖;再大就是白烧流量与解码内存 */
+const THUMB_MAX = 480;
+
 function generateVideoThumb(file: File): Promise<Blob | null> {
   return new Promise((resolve) => {
     const video = document.createElement('video');
@@ -3375,9 +3407,15 @@ function generateVideoThumb(file: File): Promise<Blob | null> {
       }
     };
     video.onseeked = () => {
+      // 按 THUMB_MAX 等比缩:曾经直接按视频原始分辨率画(1080p→1920×1080、
+      // 4K 录屏→3840×2160 的 JPEG),一张视频缩略图能到几百 KB~1MB,
+      // 是全库缩略图里最胖的一类,手机端解码尤其致命
+      const vw = video.videoWidth || 320;
+      const vh = video.videoHeight || 240;
+      const scale = Math.min(1, THUMB_MAX / Math.max(vw, vh));
       const canvas = document.createElement('canvas');
-      canvas.width = video.videoWidth || 320;
-      canvas.height = video.videoHeight || 240;
+      canvas.width = Math.max(1, Math.round(vw * scale));
+      canvas.height = Math.max(1, Math.round(vh * scale));
       const ctx = canvas.getContext('2d');
       if (!ctx) {
         cleanup();
@@ -3402,42 +3440,59 @@ function generateVideoThumb(file: File): Promise<Blob | null> {
 }
 
 /** PDF 首页渲染成预览图(pdf.js 动态导入按需加载,不进首屏包):
- *  上传时生成缩略图,卡片直接显示内容预览;失败(加密/损坏)返回 null 回退类型图标 */
+ *  上传时生成缩略图,卡片直接显示内容预览;失败(加密/损坏)或超时(超大/畸形 PDF)返回 null
+ *  回退类型图标——不阻断上传,缺的图交给引擎 R5 空闲时再补 */
+const PDF_THUMB_TIMEOUT_MS = 20_000; // 渲染看门狗:超时即放弃本次生成,避免大 PDF 卡住上传保存
 async function generatePdfThumb(file: File): Promise<Blob | null> {
-  try {
+  let loadingTask: { destroy: () => Promise<unknown> } | null = null;
+  const work = (async (): Promise<Blob | null> => {
     const pdfjs = await import('pdfjs-dist');
     const workerUrl = (await import('pdfjs-dist/build/pdf.worker.min.mjs?url')).default;
     pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
     const data = new Uint8Array(await file.arrayBuffer());
     const task = pdfjs.getDocument({ data });
+    loadingTask = task as unknown as { destroy: () => Promise<unknown> };
     const doc = await task.promise;
-    try {
-      const page = await doc.getPage(1);
-      const base = page.getViewport({ scale: 1 });
-      const scale = Math.min(2, 640 / base.width); // 宽限 640px,与图片缩略图同档
-      const viewport = page.getViewport({ scale });
-      const canvas = document.createElement('canvas');
-      canvas.width = Math.max(1, Math.round(viewport.width));
-      canvas.height = Math.max(1, Math.round(viewport.height));
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return null;
-      ctx.fillStyle = '#fff'; // 透明底 PDF 垫白,避免深色模式下透出底色
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      await page.render({ canvas, viewport }).promise;
-      return await new Promise<Blob | null>((r) => canvas.toBlob(r, 'image/jpeg', 0.8));
-    } finally {
-      await task.destroy(); // v6:destroy 在 loadingTask 上,释放 worker 与内存
-    }
+    const page = await doc.getPage(1);
+    const base = page.getViewport({ scale: 1 });
+    const scale = Math.min(2, 640 / base.width); // 宽限 640px,与图片缩略图同档
+    const viewport = page.getViewport({ scale });
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(viewport.width));
+    canvas.height = Math.max(1, Math.round(viewport.height));
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return null;
+    ctx.fillStyle = '#fff'; // 透明底 PDF 垫白,避免深色模式下透出底色
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    await page.render({ canvas, viewport }).promise;
+    return await new Promise<Blob | null>((r) => canvas.toBlob(r, 'image/jpeg', 0.8));
+  })();
+  work.catch(() => { }); // 超时后 work 的迟到 reject 需吞掉,防未处理拒绝
+  try {
+    return await Promise.race([
+      work,
+      new Promise<null>((r) => setTimeout(() => r(null), PDF_THUMB_TIMEOUT_MS)),
+    ]);
   } catch {
     return null; // 加密/损坏 PDF:不阻断上传,卡片回退类型图标
+  } finally {
+    try {
+      // 闭包内赋值不被外层控制流追踪,loadingTask 会被误收窄为 null,故显式断言
+      await (loadingTask as { destroy: () => Promise<unknown> } | null)?.destroy(); // v6:destroy 在 loadingTask 上;超时放弃时同样释放,防 worker 泄漏
+    } catch {
+      // 忽略释放异常
+    }
   }
 }
 
-/** 生成图片缩略图:长边缩到 640px 压成 JPEG。卡片列表只加载它,原图仅用于灯箱/复制/分享/下载 */
+/** 生成图片缩略图:长边缩到 480px 压成 JPEG。卡片列表只加载它,原图仅用于灯箱/复制/分享/下载。
+ *  480 的根据:卡片最宽的场景是桌面 4 列(≈288 CSS px × DPR 2 = 576 设备 px)已接近覆盖,
+ *  默认 10 列(≈115 CSS px)与手机 3 列(≈120 CSS px × DPR 3 = 360)则绰绰有余;
+ *  相比旧的 640px 像素量少约 44%,大分组滚动时解码内存与总流量同步下降 */
 async function generateImageThumb(file: File): Promise<Blob | null> {
   try {
     const bmp = await createImageBitmap(file);
-    const MAX = 640;
+    const MAX = THUMB_MAX;
     const scale = Math.min(1, MAX / Math.max(bmp.width, bmp.height));
     // 原图本来就足够小:不造缩略图,省一次上传,卡片直接用原图也不卡
     if (scale === 1 && file.size < 160 * 1024) {
@@ -3590,59 +3645,134 @@ async function compressImageIfNeeded(
   }
 }
 
-/** 单个素材补缩略图:拉原文件→本地生成(图片压缩/PDF 首页渲染)→上传→回写 DB。
- *  手动批量与引擎空闲补图(R5)共用;ok=成功 skip=原图够小/PDF 渲染不出 fail=失败 */
-async function backfillOneThumb(it: ItemDTO): Promise<'ok' | 'skip' | 'fail'> {
+/** 重建时跳过的超大视频:抽帧要把整片读进内存,手机上会直接压垮页签 */
+const BACKFILL_VIDEO_MAX = 200 * 1024 * 1024;
+
+/** 缩略图维护的两种范围 */
+type ThumbMode = 'fill' | 'rebuild';
+
+/** 能生成缩略图的类型:图片压尺寸、PDF 取首页渲染、视频取首帧 */
+const THUMBABLE_TYPES: ItemType[] = ['image', 'pdf', 'video'];
+
+/** 按模式挑目标(仅限当前视图已加载的 ITEMS):
+ *  fill    = 只补没有缩略图的图片/PDF——不碰任何已有对象,零风险
+ *  rebuild = 图片/PDF/视频全量重建为最新尺寸——逐条原子替换,旧图由服务端安全清理 */
+function thumbTargets(mode: ThumbMode): ItemDTO[] {
+  return mode === 'fill'
+    ? ITEMS.filter((i) => (i.type === 'image' || i.type === 'pdf') && !i.thumb_url)
+    : ITEMS.filter((i) => THUMBABLE_TYPES.includes(i.type));
+}
+
+/** 单个素材补/重建缩略图:拉原文件→本地生成→上传→回写 DB。
+ *  replace=true 时带 replaceThumb 声明,服务端会在 DB 指向新图后安全清理旧对象;
+ *  replace=false(补缺 / 引擎 R5)只写新指向,绝不动任何已有对象。
+ *  失败时 DB 未改、内存也未改,卡片继续用旧缩略图,不会出现指向已删对象的空图 */
+async function backfillOneThumb(it: ItemDTO, replace = false): Promise<'ok' | 'skip' | 'fail'> {
   try {
+    // 视频抽帧要把整片读进内存:超大直接跳过,不为省空间冒压垮页签的险
+    if (it.type === 'video' && (it.size ?? 0) > BACKFILL_VIDEO_MAX) return 'skip';
     const res = await fetch(it.file_url, { priority: 'low' });
     if (!res.ok) return 'fail';
     const blob = await res.blob();
     const f = new File([blob], it.filename || it.title, { type: blob.type });
-    const thumbBlob = it.type === 'pdf' ? await generatePdfThumb(f) : await generateImageThumb(f);
-    // 图片原图已足够小无需缩略图、或 PDF 加密/损坏渲染不出:跳过
+    const thumbBlob =
+      it.type === 'pdf'
+        ? await generatePdfThumb(f)
+        : it.type === 'video'
+          ? await generateVideoThumb(f)
+          : await generateImageThumb(f);
+    // 图片原图已足够小、PDF 加密/损坏、视频解不出画面(如 HEVC):跳过,保留现状
     if (!thumbBlob) return 'skip';
+    // 生成的"缩略图"比原文件还大:压不出收益,别白传一遍还多占一份
+    if (it.size && thumbBlob.size >= it.size) return 'skip';
     const thumb = await uploadFile(new File([thumbBlob], 'thumb.jpg', { type: 'image/jpeg' }), 'thumb');
     await api(`/api/items/${it.id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ thumbKey: thumb.key, thumbUrl: thumb.url }),
+      body: JSON.stringify({
+        thumbKey: thumb.key,
+        thumbUrl: thumb.url,
+        ...(replace ? { replaceThumb: true } : {}),
+      }),
     });
+    // PATCH 成功才改内存指向
     it.thumb_url = thumb.url;
     return 'ok';
   } catch {
+    // 上传或回写失败:本次上传的对象成为孤儿(不影响显示),下一轮重试会再生成
     return 'fail';
   }
 }
-/** 给无缩略图的老图片/老 PDF 补生成:管理员一次性操作(引擎 R5 也会在空闲时自动补) */
-async function backfillThumbs(): Promise<void> {
+
+let thumbRunning = false; // 防重入:两个模式共用一条串行队列
+
+/** 缩略图维护:管理员在弹窗里选「只补缺失」或「全部重建」 */
+async function runThumbMaintenance(mode: ThumbMode): Promise<void> {
   if (expiryGuard()) return;
-  while (HAS_MORE) await loadMore(); // 分页后先加载全量,再找出缺缩略图的
-  const targets = ITEMS.filter((i) => (i.type === 'image' || i.type === 'pdf') && !i.thumb_url);
-  if (!targets.length) return toast('当前公司的图片/PDF 都已有缩略图');
+  if (thumbRunning) return toast('缩略图任务正在进行中,请等它跑完', true);
+  while (HAS_MORE) await loadMore(); // 先把当前视图取满,再挑目标
+  const targets = thumbTargets(mode);
+  if (!targets.length) {
+    return toast(mode === 'fill' ? '当前视图的图片/PDF 都已有缩略图' : '当前视图没有可重建的素材');
+  }
+  if (
+    mode === 'rebuild' &&
+    !confirm(
+      `将重建当前视图 ${targets.length} 个素材的缩略图（含视频首帧）。\n\n`
+      + '不会改动或删除任何原文件；旧缩略图只在新图写入成功后才被清理。继续？',
+    )
+  ) {
+    return;
+  }
+
+  closeModal('thumb-modal');
+  thumbRunning = true;
+  bgHold(); // 批量补图要逐个下载原图 + 上传:后台引擎全程让路
   let ok = 0;
   let skip = 0;
   let fail = 0;
-  toast(`开始补缩略图:共 ${targets.length} 个…`);
-  bgHold(); // 管理员批量补图:逐个下载原图+上传缩略图,后台引擎全程让路
   const doneIds = new Set<string>();
-  for (let i = 0; i < targets.length; i++) {
-    const r = await backfillOneThumb(targets[i]);
-    if (r === 'ok') {
-      ok++;
-      doneIds.add(targets[i].id);
-    } else if (r === 'skip') skip++;
-    else fail++;
-    toast(`补缩略图 ${i + 1}/${targets.length}…`);
+  try {
+    for (let i = 0; i < targets.length; i++) {
+      const r = await backfillOneThumb(targets[i], mode === 'rebuild');
+      if (r === 'ok') {
+        ok++;
+        doneIds.add(targets[i].id);
+      } else if (r === 'skip') skip++;
+      else fail++;
+      toast(`缩略图 ${i + 1}/${targets.length}…`);
+    }
+  } finally {
+    bgRelease();
+    thumbRunning = false;
   }
-  bgRelease();
-  // 手动补过的从引擎空闲队列剔除,防重复上传;有成功则起一轮重规划重铺缓存+排字节
+  // 手动做过的从引擎空闲队列剔除,防重复上传;有成功则起一轮重规划重铺缓存+排字节
   if (doneIds.size) bgNoThumb = bgNoThumb.filter((x) => !doneIds.has(x.id));
   renderGrid();
   if (ok) bgStart();
+  const parts = [`成功 ${ok}`];
+  if (skip) parts.push(`跳过 ${skip}(原图够小 / 渲染或抽帧不出 / 视频过大)`);
+  if (fail) parts.push(`失败 ${fail}`);
   toast(
-    `补缩略图完成:成功 ${ok} 个${skip ? `, ${skip} 个跳过(原图够小或 PDF 无法渲染)` : ''}${fail ? `, ${fail} 个失败` : ''}`,
+    `${mode === 'fill' ? '补缩略图' : '重建缩略图'}完成:${parts.join(', ')}`,
     fail > 0 && ok === 0,
   );
+}
+
+/** 打开缩略图维护弹窗:把作用范围与两类目标数量先摆清楚,避免盲点 */
+function openThumbModal(): void {
+  const el = $('#thumb-scope');
+  if (el) {
+    const scopeName = favView
+      ? '收藏'
+      : selectedMenuId
+        ? (findMenu(MENUS, selectedMenuId)?.name ?? '当前分组')
+        : '整库';
+    el.innerHTML =
+      `作用范围：<b>${escapeHtml(scopeName)}</b>`
+      + ` —— 只补缺失 ${thumbTargets('fill').length} 个，全部重建 ${thumbTargets('rebuild').length} 个。`;
+  }
+  openModal('thumb-modal');
 }
 
 /** 客户端白名单粗筛:最终类型仍由服务端按 mime+扩展名权威判定 */
