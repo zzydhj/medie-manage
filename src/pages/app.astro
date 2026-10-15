@@ -550,7 +550,10 @@ if (!user) {
             <span>只补缺失</span>
             <span class="thumb-opt-badge">安全</span>
           </div>
-          <p>给当前视图里没有缩略图的图片 / PDF 补生成。不碰任何已有缩略图。</p>
+          <p>
+            给全公司（所有分组）里没有缩略图的图片 / PDF
+            补生成。不碰任何已有缩略图。
+          </p>
           <button id="thumb-fill" class="btn btn-primary">开始补缺</button>
         </div>
         <div class="thumb-opt">
@@ -560,8 +563,9 @@ if (!user) {
             <span class="thumb-opt-badge warn">运维</span>
           </div>
           <p>
-            把当前视图里图片 / PDF / <b>视频</b
-            >的缩略图按最新尺寸重新生成。逐条原子替换：
+            把全公司（所有分组）里图片 / PDF / <b>视频</b>
+            的缩略图按最新尺寸重新生成。已经是最新尺寸的会直接跳过，所以
+            <b>重复点不会重复干活</b>。逐条原子替换：
             新图写入成功之后才清理旧图，中途关页面只会留下“一半新一半旧”，不会出现空白卡片。
           </p>
           <p class="thumb-warn">

@@ -3724,27 +3724,70 @@ async function compressImageIfNeeded(
 /** 重建时跳过的超大视频:抽帧要把整片读进内存,手机上会直接压垮页签 */
 const BACKFILL_VIDEO_MAX = 200 * 1024 * 1024;
 
+/** 整库扫描的页数上限:防极端大库把请求打飞(60 页 = 6000 条) */
+const ORG_SCAN_MAX_PAGES = 60;
+
 /** 缩略图维护的两种范围 */
 type ThumbMode = 'fill' | 'rebuild';
 
 /** 能生成缩略图的类型:图片压尺寸、PDF 取首页渲染、视频取首帧 */
 const THUMBABLE_TYPES: ItemType[] = ['image', 'pdf', 'video'];
 
-/** 按模式挑目标(仅限当前视图已加载的 ITEMS):
+/** 拉本公司全部素材清单(整库视图逐页,不受当前分组限制)。
+ *  缩略图维护是公司级运维动作,必须覆盖所有分组,不该让人每个分组点一次。
+ *  api() 会自动带 X-Org-Id,超管切换公司后扫的也是当前公司。 */
+async function fetchAllOrgItems(): Promise<ItemDTO[]> {
+  const all: ItemDTO[] = [];
+  let page = 1;
+  for (; ;) {
+    const d = await api<PageData>(`/api/content?page=${page}&pageSize=${VIEW_PAGE}`);
+    all.push(...d.items);
+    if (!d.items.length || all.length >= d.total || page >= ORG_SCAN_MAX_PAGES) break;
+    page++;
+  }
+  return all;
+}
+
+/** 按模式挑目标:
  *  fill    = 只补没有缩略图的图片/PDF——不碰任何已有对象,零风险
- *  rebuild = 图片/PDF/视频全量重建为最新尺寸——逐条原子替换,旧图由服务端安全清理 */
-function thumbTargets(mode: ThumbMode): ItemDTO[] {
+ *  rebuild = 图片/PDF/视频重建为最新尺寸——已是目标尺寸的会被跳过(见幂等保护) */
+function thumbTargets(mode: ThumbMode, list: ItemDTO[]): ItemDTO[] {
   return mode === 'fill'
-    ? ITEMS.filter((i) => (i.type === 'image' || i.type === 'pdf') && !i.thumb_url)
-    : ITEMS.filter((i) => THUMBABLE_TYPES.includes(i.type));
+    ? list.filter((i) => (i.type === 'image' || i.type === 'pdf') && !i.thumb_url)
+    : list.filter((i) => THUMBABLE_TYPES.includes(i.type));
+}
+
+/** 读一张已存在图片的长边(px):重建前判断它是不是已经是目标尺寸。
+ *  只下载缩略图本身(几十 KB),比重新拉原图便宜两个数量级;
+ *  读不出(网络失败/解不了)返回 null,由调用方当作“需要重建”处理 */
+async function probeImageMaxEdge(url: string): Promise<number | null> {
+  try {
+    const res = await fetch(url, { priority: 'low' });
+    if (!res.ok) return null;
+    const bmp = await createImageBitmap(await res.blob());
+    const edge = Math.max(bmp.width, bmp.height);
+    bmp.close?.();
+    return edge || null;
+  } catch {
+    return null;
+  }
 }
 
 /** 单个素材补/重建缩略图:拉原文件→本地生成→上传→回写 DB。
  *  replace=true 时带 replaceThumb 声明,服务端会在 DB 指向新图后安全清理旧对象;
  *  replace=false(补缺 / 引擎 R5)只写新指向,绝不动任何已有对象。
  *  失败时 DB 未改、内存也未改,卡片继续用旧缩略图,不会出现指向已删对象的空图 */
-async function backfillOneThumb(it: ItemDTO, replace = false): Promise<'ok' | 'skip' | 'fail'> {
+async function backfillOneThumb(
+  it: ItemDTO,
+  replace = false,
+): Promise<'ok' | 'current' | 'skip' | 'fail'> {
   try {
+    // 重建幂等保护:现有缩略图已经是目标尺寸就跳过。
+    // 否则每点一次重建就把全公司儿百张原图重下一遍、重编码一遍、旧对象全换成新 key
+    if (replace && it.thumb_url) {
+      const edge = await probeImageMaxEdge(it.thumb_url);
+      if (edge !== null && edge <= THUMB_MAX) return 'current';
+    }
     // 视频抽帧要把整片读进内存:超大直接跳过,不为省空间冒压垮页签的险
     if (it.type === 'video' && (it.size ?? 0) > BACKFILL_VIDEO_MAX) return 'skip';
     const res = await fetch(it.file_url, { priority: 'low' });
@@ -3787,25 +3830,36 @@ let thumbRunning = false; // 防重入:两个模式共用一条串行队列
 async function runThumbMaintenance(mode: ThumbMode): Promise<void> {
   if (expiryGuard()) return;
   if (thumbRunning) return toast('缩略图任务正在进行中,请等它跑完', true);
-  while (HAS_MORE) await loadMore(); // 先把当前视图取满,再挑目标
-  const targets = thumbTargets(mode);
+  // 公司级扫描:整库逐页取清单,不受当前分组限制(不然每个分组都要点一次)
+  thumbRunning = true;
+  let targets: ItemDTO[];
+  try {
+    toast('正在扫描全公司素材清单…');
+    targets = thumbTargets(mode, await fetchAllOrgItems());
+  } catch (e) {
+    thumbRunning = false;
+    return toast((e as Error).message || '扫描素材清单失败', true);
+  }
   if (!targets.length) {
-    return toast(mode === 'fill' ? '当前视图的图片/PDF 都已有缩略图' : '当前视图没有可重建的素材');
+    thumbRunning = false;
+    return toast(mode === 'fill' ? '全公司的图片/PDF 都已有缩略图' : '全公司没有需要处理的素材');
   }
   if (
     mode === 'rebuild' &&
     !confirm(
-      `将重建当前视图 ${targets.length} 个素材的缩略图（含视频首帧）。\n\n`
-      + '不会改动或删除任何原文件；旧缩略图只在新图写入成功后才被清理。继续？',
+      `将重建全公司 ${targets.length} 个素材的缩略图（图片 / PDF / 视频首帧，含所有分组）。\n\n`
+      + '已经是最新尺寸的会自动跳过；不会改动或删除任何原文件；旧缩略图只在新图写入成功后才被清理。继续？',
     )
   ) {
+    // 必须复位:此处 thumbRunning 已置 true 且还没进入 try/finally,漏复位会永久卡住后续任务
+    thumbRunning = false;
     return;
   }
 
   closeModal('thumb-modal');
-  thumbRunning = true;
   bgHold(); // 批量补图要逐个下载原图 + 上传:后台引擎全程让路
   let ok = 0;
+  let current = 0;
   let skip = 0;
   let fail = 0;
   const doneIds = new Set<string>();
@@ -3815,9 +3869,11 @@ async function runThumbMaintenance(mode: ThumbMode): Promise<void> {
       if (r === 'ok') {
         ok++;
         doneIds.add(targets[i].id);
-      } else if (r === 'skip') skip++;
+      } else if (r === 'current') current++;
+      else if (r === 'skip') skip++;
       else fail++;
-      toast(`缩略图 ${i + 1}/${targets.length}…`);
+      // 每 20 个报一次:整库可能上千条,逐个弹会刷屏
+      if (i % 20 === 0 || i === targets.length - 1) toast(`缩略图 ${i + 1}/${targets.length}…`);
     }
   } finally {
     bgRelease();
@@ -3825,29 +3881,26 @@ async function runThumbMaintenance(mode: ThumbMode): Promise<void> {
   }
   // 手动做过的从引擎空闲队列剔除,防重复上传;有成功则起一轮重规划重铺缓存+排字节
   if (doneIds.size) bgNoThumb = bgNoThumb.filter((x) => !doneIds.has(x.id));
-  renderGrid();
-  if (ok) bgStart();
+  // 目标是整库扫描得到的新对象,与当前视图 ITEMS 不是同一引用;不重新拉一次,
+  // 改过的缩略图地址不会反映到卡片与缓存里。loadContent 末尾会自己起一轮引擎重规划
+  await loadContent();
   const parts = [`成功 ${ok}`];
+  if (current) parts.push(`已是最新 ${current}`);
   if (skip) parts.push(`跳过 ${skip}(原图够小 / 渲染或抽帧不出 / 视频过大)`);
   if (fail) parts.push(`失败 ${fail}`);
   toast(
-    `${mode === 'fill' ? '补缩略图' : '重建缩略图'}完成:${parts.join(', ')}`,
+    `${mode === 'fill' ? '补缩略图' : '重建缩略图'}完成 · 全公司:${parts.join(', ')}`,
     fail > 0 && ok === 0,
   );
 }
 
-/** 打开缩略图维护弹窗:把作用范围与两类目标数量先摆清楚,避免盲点 */
+/** 打开缩略图维护弹窗:作用范围是公司级(所有分组);具体数量要扫描后才准确,不在这里预估 */
 function openThumbModal(): void {
   const el = $('#thumb-scope');
   if (el) {
-    const scopeName = favView
-      ? '收藏'
-      : selectedMenuId
-        ? (findMenu(MENUS, selectedMenuId)?.name ?? '当前分组')
-        : '整库';
+    const orgName = ME?.org?.name ?? ME?.orgs?.find((o) => o.id === activeOrgId)?.name ?? '当前公司';
     el.innerHTML =
-      `作用范围：<b>${escapeHtml(scopeName)}</b>`
-      + ` —— 只补缺失 ${thumbTargets('fill').length} 个，全部重建 ${thumbTargets('rebuild').length} 个。`;
+      `作用范围：<b>${escapeHtml(orgName)}</b> 的全部素材（所有分组），不是只看当前打开的这一组。`;
   }
   openModal('thumb-modal');
 }
