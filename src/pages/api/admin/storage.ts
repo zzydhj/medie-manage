@@ -3,7 +3,8 @@ import { getOrg, getStorageByOrg, listOrgs } from '../../../lib/db';
 import { err, getEnv, isResponse, json, requireAdmin } from '../../../lib/api';
 
 // 存储用量:超级管理员看全部公司(按公司分组),公司管理员只看本公司。
-// 用量 = 各素材原文件 size 合计(不含缩略图);仅统计到公司级,不细分到用户。
+// 用量 = 原文件 + 缩略图 的真实字节合计(与 R2 实际计费口径对齐);仅统计到公司级,不细分到用户。
+// 注:历史素材的 thumb_size 可能为 NULL(未记录),这部分偏低由计费安全边际吸收。
 export const GET: APIRoute = async (context) => {
   const admin = requireAdmin(context.locals);
   if (isResponse(admin)) return admin;

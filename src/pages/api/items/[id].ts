@@ -39,6 +39,7 @@ export const PATCH: APIRoute = async (context) => {
     menuId?: string;
     thumbKey?: string;
     thumbUrl?: string;
+    thumbSize?: number | null;
     duration?: number;
     /** 显式声明「这是替换缩略图」:成功后顺带清理旧对象。不传则只换指向、不动旧文件 */
     replaceThumb?: boolean;
@@ -64,6 +65,7 @@ export const PATCH: APIRoute = async (context) => {
     menu_id?: string;
     thumb_key?: string;
     thumb_url?: string;
+    thumb_size?: number | null;
     duration?: number;
   } = {};
   if (body.title !== undefined) {
@@ -82,6 +84,11 @@ export const PATCH: APIRoute = async (context) => {
     if (!body.thumbKey.startsWith(`org/${orgId}/`)) return err('文件不属于当前公司', 403);
     patch.thumb_key = body.thumbKey;
     patch.thumb_url = body.thumbUrl;
+    // 新缩略图的字节数:重建时必须一并更新,否则计费口径会停在旧值
+    if (body.thumbSize !== undefined) {
+      const ts = Number(body.thumbSize);
+      patch.thumb_size = Number.isFinite(ts) && ts >= 0 ? Math.round(ts) : null;
+    }
   }
   if (body.duration !== undefined) {
     const d = Number(body.duration);

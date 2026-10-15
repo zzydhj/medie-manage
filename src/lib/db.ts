@@ -40,6 +40,7 @@ export interface ItemRow {
   thumb_url: string | null;
   mime: string | null;
   size: number | null;
+  thumb_size: number | null; // 缩略图字节:R2 里的真实对象,计费必须算进去(NULL=历史未记录)
   filename: string | null;
   duration: number | null;
   sort_order: number;
@@ -52,6 +53,11 @@ export function newId(): string {
 
 export function now(): number {
   return Math.floor(Date.now() / 1000);
+}
+
+/** 东八区日期字符串 YYYY-MM-DD:用量快照按公司计费日归档,与到期日「当日末」口径对齐 */
+export function cnDay(ts = Date.now()): string {
+  return new Date(ts + 8 * 3600_000).toISOString().slice(0, 10);
 }
 
 // ------------------------- 组织 -------------------------
@@ -89,24 +95,49 @@ export interface OrgStorage {
   count: number; // 素材条数
 }
 
-/** 统计存储用量:orgId 为 null 时按公司分组返回全部,否则只返回该公司一条 */
+/** 统计存储用量:orgId 为 null 时按公司分组返回全部,否则只返回该公司一条。
+ *  口径 = 原文件 + 缩略图 的真实字节合计(R2 按对象实际字节计费,漏一项就是稳亏)。 */
 export async function getStorageByOrg(
   db: D1Database,
   orgId: string | null,
 ): Promise<OrgStorage[]> {
+  const sumSql = 'COALESCE(SUM(COALESCE(size, 0) + COALESCE(thumb_size, 0)), 0)';
   if (orgId) {
     const row = await db
-      .prepare('SELECT COALESCE(SUM(size), 0) AS bytes, COUNT(*) AS count FROM items WHERE org_id = ?')
+      .prepare(`SELECT ${sumSql} AS bytes, COUNT(*) AS count FROM items WHERE org_id = ?`)
       .bind(orgId)
       .first<{ bytes: number; count: number }>();
     return [{ org_id: orgId, bytes: row?.bytes ?? 0, count: row?.count ?? 0 }];
   }
   const { results } = await db
     .prepare(
-      'SELECT org_id, COALESCE(SUM(size), 0) AS bytes, COUNT(*) AS count FROM items GROUP BY org_id',
+      `SELECT org_id, ${sumSql} AS bytes, COUNT(*) AS count FROM items GROUP BY org_id`,
     )
     .all<OrgStorage>();
   return results ?? [];
+}
+
+/**
+ * 记录该公司「当日存储峰值」快照。
+ * R2 的 GB-month 口径是周期内每日峰值的平均值,所以必须在用量变化时打点,不能只看当前值。
+ * 同一日多次写入取最大值(峰值语义),天然幂等。
+ * 失败不阻断主流程:快照是计费辅助,不该让上传/删除因此报错。
+ */
+export async function snapshotOrgUsage(db: D1Database, orgId: string): Promise<void> {
+  try {
+    const [{ bytes }] = await getStorageByOrg(db, orgId);
+    await db
+      .prepare(
+        `INSERT INTO usage_snapshots (org_id, day, bytes, updated_at) VALUES (?, ?, ?, ?)
+         ON CONFLICT(org_id, day) DO UPDATE SET
+           bytes = MAX(bytes, excluded.bytes),
+           updated_at = excluded.updated_at`,
+      )
+      .bind(orgId, cnDay(), bytes, now())
+      .run();
+  } catch {
+    // 忽略:快照缺失不影响业务写入,下次变更会自行补上当日峰值
+  }
 }
 
 export async function createOrg(
@@ -432,8 +463,8 @@ export async function createItem(
   await db
     .prepare(
       `INSERT INTO items
-       (id, org_id, menu_id, type, title, file_key, file_url, thumb_key, thumb_url, mime, size, filename, duration, sort_order, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, org_id, menu_id, type, title, file_key, file_url, thumb_key, thumb_url, mime, size, thumb_size, filename, duration, sort_order, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
       id,
@@ -447,6 +478,7 @@ export async function createItem(
       it.thumb_url,
       it.mime,
       it.size,
+      it.thumb_size,
       it.filename,
       it.duration,
       sort,
@@ -454,6 +486,8 @@ export async function createItem(
       now(),
     )
     .run();
+  // 用量刚增长:立即补一条当日峰值快照(计费依据)
+  await snapshotOrgUsage(db, it.orgId);
   return id;
 }
 
@@ -466,9 +500,13 @@ export async function updateItem(
     menu_id?: string;
     thumb_key?: string | null;
     thumb_url?: string | null;
+    thumb_size?: number | null;
     duration?: number | null;
   },
 ): Promise<void> {
+  // 换缩略图会改变公司总字节(重建通常变小):先留变更前的峰值,再留变更后的
+  const thumbChanged = patch.thumb_key !== undefined || patch.thumb_size !== undefined;
+  if (thumbChanged) await snapshotOrgUsage(db, orgId);
   const fields: string[] = [];
   const vals: unknown[] = [];
   if (patch.title !== undefined) {
@@ -487,6 +525,10 @@ export async function updateItem(
     fields.push('thumb_url = ?');
     vals.push(patch.thumb_url);
   }
+  if (patch.thumb_size !== undefined) {
+    fields.push('thumb_size = ?');
+    vals.push(patch.thumb_size);
+  }
   if (patch.duration !== undefined) {
     fields.push('duration = ?');
     vals.push(patch.duration);
@@ -498,9 +540,12 @@ export async function updateItem(
     .prepare(`UPDATE items SET ${fields.join(', ')} WHERE id = ? AND org_id = ?`)
     .bind(...vals, id, orgId)
     .run();
+  if (thumbChanged) await snapshotOrgUsage(db, orgId);
 }
 
 export async function deleteItem(db: D1Database, id: string, orgId: string): Promise<void> {
+  // 删除前先打点:当日峰值是删之前的值,删完再打就会把峰值记低
+  await snapshotOrgUsage(db, orgId);
   // 连带清理指向该素材的收藏记录
   await db.prepare('DELETE FROM user_favorites WHERE item_id = ?').bind(id).run();
   await db.prepare('DELETE FROM items WHERE id = ? AND org_id = ?').bind(id, orgId).run();

@@ -19,8 +19,8 @@ export const GET: APIRoute = async (context) => {
   return json({ dup: !!row });
 };
 
-// 创建卡片:{ menuId, type, title, fileKey, fileUrl, thumbKey?, thumbUrl?, mime?, size?, filename? }
-// 文件须先经 /api/upload 上传到 R2 得到 key/url
+// 创建卡片:{ menuId, type, title, fileKey, fileUrl, thumbKey?, thumbUrl?, thumbSize?, mime?, size?, filename? }
+// 文件须先经 /api/upload 上传到 R2 得到 key/url;thumbSize 传缩略图字节数,用于存储计费
 export const POST: APIRoute = async (context) => {
   const guard = await requireAdminOrg(context);
   if (isResponse(guard)) return guard;
@@ -35,6 +35,7 @@ export const POST: APIRoute = async (context) => {
     fileUrl?: string;
     thumbKey?: string | null;
     thumbUrl?: string | null;
+    thumbSize?: number | null;
     mime?: string | null;
     size?: number | null;
     filename?: string | null;
@@ -85,6 +86,8 @@ export const POST: APIRoute = async (context) => {
     file_url: fileUrl,
     thumb_key: body.thumbKey ?? null,
     thumb_url: body.thumbUrl ?? null,
+    // 缩略图也是 R2 里的真实对象,不记就会少计费;未传则置 NULL(历史数据同此,由「全部重建」补齐)
+    thumb_size: Number.isFinite(Number(body.thumbSize)) ? Number(body.thumbSize) : null,
     mime: body.mime ?? null,
     size: body.size ?? null,
     filename: body.filename ?? null,
