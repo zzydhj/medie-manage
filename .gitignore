@@ -3,6 +3,12 @@ dist/
 .output/
 .astro/
 
+# local D1 database backups (含真实生产数据,绝不入库)
+.d1-*.sql
+
+# temp artifacts
+_tmp.png
+
 # dependencies
 node_modules/
 
