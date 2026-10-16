@@ -357,6 +357,20 @@ body {
   margin-top: 20px;
 }
 
+/* ===== 手机端「选完文件 → change 触发」空窗期的读取提示窗(复用 warmup 遮罩/白卡外观) =====
+   spinner 只定义尺寸与颜色,旋转交给 Font Awesome 的 .fa-spin,避免与 .warmup-icon 的脉冲动画冲突 */
+.file-reading-spinner {
+  font-size: 40px;
+  color: #2563eb;
+}
+
+.file-reading-hint {
+  margin-top: 12px;
+  font-size: 13px;
+  color: #64748b;
+  text-align: center;
+}
+
 /* 日期选择输入:默认屏外隐藏(showPicker 要求元素已渲染),
    不支持 showPicker 的浏览器回退内联展示 */
 .expiry-input-offscreen {

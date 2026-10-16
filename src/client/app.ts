@@ -4120,6 +4120,28 @@ let batchQueue: Promise<void> = Promise.resolve();
 let batchRunning = false;
 let batchRunSeq = 0;
 
+// ---------------- 手机端「选完文件 → change 触发」之间的空窗反馈 ----------------
+// 手机上选完 N 张图点确认后,系统要逐张导出(HEIC 转码 / iCloud 原图下载 / 拷贝进沙盒),
+// 这期间 change 事件不触发、页面收不到任何信号,用户会以为「点了确认没反应」甚至重复操作。
+// 对策:打开系统选择器前就盖上「正在读取」窗解释在干活;change(选完)或 cancel(取消)到达即收。
+// 兜底防卡死:watchdog 到时强制收 + 点遮罩可手动收,应对极老浏览器无 cancel 事件的场景。
+let fileReadingTimer: number | undefined;
+const FILE_READING_MAX_MS = 60_000;
+
+function showFileReading() {
+  const overlay = $('#file-reading-overlay');
+  if (!overlay) return;
+  overlay.classList.remove('hidden');
+  window.clearTimeout(fileReadingTimer);
+  fileReadingTimer = window.setTimeout(hideFileReading, FILE_READING_MAX_MS);
+}
+
+function hideFileReading() {
+  window.clearTimeout(fileReadingTimer);
+  fileReadingTimer = undefined;
+  $('#file-reading-overlay')?.classList.add('hidden');
+}
+
 function handleBatchChosen(files: File[]) {
   if (!selectedMenuId) return toast('请先在左侧选择一个菜单', true);
   const targetMenuId = selectedMenuId; // 选择时锁定:之后切菜单不会串改这批的归属
@@ -4655,13 +4677,22 @@ function bindModals() {
   // 素材:文件选择 + 拖拽
   const dz = $('#dropzone') as HTMLElement;
   const fi = $('#file-input') as HTMLInputElement;
-  dz?.addEventListener('click', () => fi.click());
+  dz?.addEventListener('click', () => {
+    // 手机端:系统导出所选文件期间 change 迟迟不来,先盖「正在读取」窗,消除「点了确认没反应」的错觉
+    if (isMobileViewport()) showFileReading();
+    fi.click();
+  });
+  // 取消选择:收起读取窗(现代移动浏览器均支持 input 的 cancel 事件)
+  fi?.addEventListener('cancel', hideFileReading);
   fi?.addEventListener('change', () => {
+    hideFileReading(); // 文件已就绪(或桌面端未显示):先收窗再进上传流程
     const files = Array.from(fi.files ?? []);
     if (files.length === 1) handleFileChosen(files[0]);
     else if (files.length > 1) handleBatchChosen(files);
     fi.value = ''; // 清空:下次再选到相同文件也能触发 change
   });
+  // 点遮罩手动收起:兜底逃生口,防极老浏览器无 cancel 事件时被困在读取窗
+  $('#file-reading-overlay')?.addEventListener('click', hideFileReading);
   ['dragenter', 'dragover'].forEach((ev) =>
     dz?.addEventListener(ev, (e) => {
       e.preventDefault();

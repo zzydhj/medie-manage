@@ -486,6 +486,19 @@ if (!user) {
     </div>
   </div>
 
+  <!-- ===== 手机端「选完文件 → change 触发」空窗期的读取提示窗 =====
+       手机上选完 N 张图点确认后,系统要逐张导出(HEIC 转码 / iCloud 原图下载 / 拷贝进沙盒),
+       这期间 change 事件不触发、页面收不到任何信号,用户会以为「点了确认没反应」。
+       打开选择器前先盖上此窗解释在干活;change(选完)或 cancel(取消)到达即收。
+       复用 warmup 遮罩/白卡外观,保持视觉一致 -->
+  <div id="file-reading-overlay" class="warmup-overlay hidden">
+    <div class="warmup-box">
+      <i class="fa-solid fa-spinner fa-spin file-reading-spinner"></i>
+      <div class="warmup-title">正在读取所选文件…</div>
+      <div class="file-reading-hint">手机导出图片需要一点时间,请稍候</div>
+    </div>
+  </div>
+
   <!-- ===== 公司管理 弹窗(超级管理员) ===== -->
   <div id="org-modal" class="modal-mask">
     <div class="modal-box">
