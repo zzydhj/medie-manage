@@ -8,6 +8,7 @@ dist/
 
 # temp artifacts
 _tmp.png
+_tmp_*.mjs
 
 # dependencies
 node_modules/

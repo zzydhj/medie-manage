@@ -4109,7 +4109,9 @@ async function saveItem() {
 
 /**
  * 批量上传:选择 / 拖入多个文件时走这里。
- * 串行逐个上传(不并发:省手机内存与带宽,也避免服务端瞬时压力)。
+ * 3 路并行跑完整流水线(UPLOAD_CONCURRENCY):某一路在做图像 CPU 时,其余路正在传字节,
+ * CPU 时间与网络时间自然重叠。图像重活另有单路闸门(见 cpuGate)——手机上同时解码
+ * 多张 4~8MP 图会把内存顶爆,那一步串行反而整体更快。
  * 去重:同一公司内「文件名 + 大小」已存在即跳过——相机常生成 IMG_0001.jpg 这类同名文件,
  *      只比文件名会误跳,故必须连字节大小一起判断;同一批里选到两次也只传一次。
  */
@@ -4140,6 +4142,82 @@ function hideFileReading() {
   window.clearTimeout(fileReadingTimer);
   fileReadingTimer = undefined;
   $('#file-reading-overlay')?.classList.add('hidden');
+}
+
+// ---------------- 上传并发闸门与判重微批 ----------------
+// 并发度 3 路:手机浏览器对单站点本就有连接数上限,再高只是把上行带宽摊薄、
+// 内存压力与限流失败率一起上来,收益不增反降。
+const UPLOAD_CONCURRENCY = 3;
+
+/** 信号量:限制「同时只做 N 件」。用于把图像重活(整幅解码 + canvas 编码)收敛到单路:
+ *  3 路同时各解码一张 4~8MP 图,手机页签很容易被内存顶爆后整批卡死;而单路做 CPU 时,
+ *  其余路正好在传字节 —— 该重的排队做,该等的并行跑。 */
+function createGate(limit: number) {
+  let running = 0;
+  const waiters: (() => void)[] = [];
+  return {
+    async run<T>(fn: () => Promise<T>): Promise<T> {
+      // 排队者由 release 直接交接名额(running 未降),不再自增:若先降再放,
+      // 空位会被新任务抢走,同一时刻超额放行,闸门形同虚设
+      if (running >= limit) await new Promise<void>((res) => waiters.push(res));
+      else running++;
+      try {
+        return await fn();
+      } finally {
+        const next = waiters.shift();
+        if (next) next(); // 名额原地交给下一个等待者,running 保持不变
+        else running--; // 没人在等才真正腾出空位
+      }
+    },
+  };
+}
+/** 模块级单例:批量任务走 batchQueue 串行,一批内每条流水线都会跑到 finally 释放闸门,
+ *  不存在跳批残留的排队者 */
+const cpuGate = createGate(1);
+
+// 判重微批:并发上传下「每文件问一次服务端」会放大成 N 次 round-trip;
+// 把短时间窗内的询问合成一次 POST。语义与旧单文件判重一致:命中即跳过,不浪费上传流量。
+const DUP_WINDOW_MS = 200;
+const DUP_BATCH_MAX = 8;
+type DupAsk = { key: string; resolve: (dup: boolean) => void; reject: (e: unknown) => void };
+let dupPending: DupAsk[] = [];
+let dupTimer: number | undefined;
+
+function flushDupQueue() {
+  const batch = dupPending.slice(0, DUP_BATCH_MAX);
+  dupPending = dupPending.slice(DUP_BATCH_MAX);
+  window.clearTimeout(dupTimer);
+  dupTimer = undefined;
+  if (!batch.length) return;
+  api<{ dups: string[] }>('/api/items/dup-check', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      candidates: batch.map((b) => {
+        const at = b.key.lastIndexOf('|');
+        return { filename: b.key.slice(0, at), size: Number(b.key.slice(at + 1)) };
+      }),
+    }),
+  })
+    .then((d) => {
+      const hit = new Set(d.dups);
+      batch.forEach((b) => b.resolve(hit.has(b.key)));
+    })
+    // 判重问不出来时不往库里塞「可能是重复」的项:让这一行的几个文件按失败收尾,可重选重传
+    .catch((e) => batch.forEach((b) => b.reject(e)));
+  if (dupPending.length) dupTimer = window.setTimeout(flushDupQueue, DUP_WINDOW_MS);
+}
+
+/** 问一次「这个文件名 + 字节数是否已在公司库内」;与其他并发询问自动合批 */
+function checkDup(filename: string, size: number): Promise<boolean> {
+  return new Promise((resolve, reject) => {
+    dupPending.push({ key: `${filename}|${size}`, resolve, reject });
+    if (dupPending.length >= DUP_BATCH_MAX) {
+      flushDupQueue(); // 攒满即刻发,不等窗口
+      return;
+    }
+    if (dupTimer === undefined) dupTimer = window.setTimeout(flushDupQueue, DUP_WINDOW_MS);
+  });
 }
 
 function handleBatchChosen(files: File[]) {
@@ -4264,48 +4342,49 @@ async function batchUploadTask(files: File[], targetMenuId: string, queued: bool
   const total = rows.length;
   let ok = 0;
   let errCount = 0;
-  for (let i = 0; i < rows.length; i++) {
-    const r = rows[i];
-    if (r.state !== 'pending') continue;
+  let finished = 0;
+
+  /** 行内备注:并发下共享状态行放不下「第几个文件在干什么」,直接把阶段文案写在它那行的状态位 */
+  const rowNote = (i: number, text: string) => {
+    if (!ownsUi()) return;
+    const el = listEl.querySelector(`[data-idx="${i}"] .batch-row-state`) as HTMLElement | null;
+    if (el) el.textContent = text;
+  };
+
+  /** 单个文件的完整流水线:备料(CPU) → 判重 → 传原图 → 出预览图(CPU) → 传预览图 → 写库 */
+  const pipeline = async (r: Row, i: number) => {
     r.state = 'uploading';
     paint(r, i);
-    say(`正在上传 ${i + 1}/${total}:${r.file.name}`);
     try {
-      // 苹果 HEIC:上传前先转成 JPG
-      let work = await convertHeicIfNeeded(r.file, (s) => {
-        say(`${i + 1}/${total}:${s}`);
-      });
-      // 相机/手机原图太大:视觉基本无损地压一道再传
-      const compressed = await compressImageIfNeeded(work, (s) => {
-        say(`${i + 1}/${total}:${s}`);
-      });
-      work = compressed.file;
+      // 苹果 HEIC:上传前先转成 JPG;相机/手机原图太大:视觉基本无损地压一道再传。
+      // 两步都过 cpuGate:手机上并行解码多张大图会顶爆内存,排队做反而整体更快
+      let work = await cpuGate.run(() => convertHeicIfNeeded(r.file, (s) => rowNote(i, s)));
+      const cmp = await cpuGate.run(() => compressImageIfNeeded(work, (s) => rowNote(i, s)));
+      work = cmp.file;
       // 服务端全量判重(前端只持有已加载页):重复直接跳过,不浪费上传流量
-      const dup = await api<{ dup: boolean }>(
-        `/api/items?filename=${encodeURIComponent(work.name)}&size=${work.size}`,
-      );
-      if (dup.dup) {
+      if (await checkDup(work.name, work.size)) {
         r.state = 'skip';
         r.msg = '已存在';
-        paint(r, i);
         skipped++;
-        continue;
+        return;
       }
-      const main = await uploadFile(work, 'main', (loaded, total) => {
-        paint(r, i, Math.round((loaded / total) * 100));
+      const main = await uploadFile(work, 'main', (loaded, bytes) => {
+        paint(r, i, Math.round((loaded / bytes) * 100));
       });
       const type = main.type as ItemType; // 服务端权威判定
       let thumbKey: string | null = null;
       let thumbUrl: string | null = null;
       let thumbSize: number | null = null;
-      const duration = type === 'video' ? await probeVideoDuration(work) : null;
+      const duration = type === 'video' ? await cpuGate.run(() => probeVideoDuration(work)) : null;
       if (type === 'video' || type === 'image' || type === 'pdf') {
-        const blob =
+        // 预览图同样要解码整幅图 / 抽视频首帧:与压缩共用同一个单路闸门
+        const blob = await cpuGate.run(async () =>
           type === 'video'
             ? await generateVideoThumb(work)
             : type === 'image'
               ? await generateImageThumb(work)
-              : await generatePdfThumb(work); // PDF 首页预览图
+              : await generatePdfThumb(work), // PDF 首页预览图
+        );
         if (blob) {
           const t = await uploadFile(new File([blob], 'thumb.jpg', { type: 'image/jpeg' }), 'thumb');
           thumbKey = t.key;
@@ -4332,14 +4411,37 @@ async function batchUploadTask(files: File[], targetMenuId: string, queued: bool
         }),
       });
       r.state = 'done';
-      r.msg = compressed.note;
+      r.msg = cmp.note;
       ok++;
     } catch (e) {
       r.state = 'fail';
       r.msg = (e as Error).message || '上传失败';
       errCount++;
+    } finally {
+      // 异常路径也必须释锁与计数:上一行抛错不能把本行永远停在"上传中"
+      finished++;
+      paint(r, i);
+      say(`上传中…已完成 ${finished}/${total}`);
     }
-    paint(r, i);
+  };
+
+  // 3 路并行取任务:游标在同步代码里推进,不会有两个槽拿到同一行
+  const queue = rows
+    .map((r, i) => ({ r, i }))
+    .filter((x) => x.r.state === 'pending');
+  let cursor = 0;
+  const slot = async () => {
+    for (;;) {
+      const take = queue[cursor++];
+      if (!take) return;
+      await pipeline(take.r, take.i);
+    }
+  };
+  if (queue.length) {
+    say(`上传中…共 ${total} 个,${Math.min(UPLOAD_CONCURRENCY, queue.length)} 路并行`);
+    await Promise.all(
+      Array.from({ length: Math.min(UPLOAD_CONCURRENCY, queue.length) }, () => slot()),
+    );
   }
 
   const parts: string[] = [];

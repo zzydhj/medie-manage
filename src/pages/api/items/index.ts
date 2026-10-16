@@ -2,22 +2,7 @@ import type { APIRoute } from 'astro';
 import { createItem, getMenu } from '../../../lib/db';
 import { err, getEnv, isResponse, json, requireAdminOrg } from '../../../lib/api';
 
-// 判重:GET /api/items?filename=&size= → { dup } 。批量上传前调用,避免传完才发现重复(省流量/免孤儿文件)
-export const GET: APIRoute = async (context) => {
-  const guard = await requireAdminOrg(context);
-  if (isResponse(guard)) return guard;
-  const { orgId } = guard;
-  const env = getEnv(context.locals);
-  const url = new URL(context.request.url);
-  const filename = url.searchParams.get('filename');
-  const size = parseInt(url.searchParams.get('size') ?? '', 10);
-  if (!filename || Number.isNaN(size)) return json({ dup: false });
-  const row = await env.DB
-    .prepare('SELECT 1 AS x FROM items WHERE org_id = ? AND filename = ? AND size = ? LIMIT 1')
-    .bind(orgId, filename, size)
-    .first<{ x: number }>();
-  return json({ dup: !!row });
-};
+// 判重已迁到 POST /api/items/dup-check(批量):并发上传下逐文件问一次会放大成 N 次 round-trip
 
 // 创建卡片:{ menuId, type, title, fileKey, fileUrl, thumbKey?, thumbUrl?, thumbSize?, mime?, size?, filename? }
 // 文件须先经 /api/upload 上传到 R2 得到 key/url;thumbSize 传缩略图字节数,用于存储计费
